@@ -1,0 +1,7 @@
+particle_sims
+pres_plots
+.vscode
+haissinski.jl
+Manifest.jl
+graph_generation.jl
+interpolations_testing.jl
