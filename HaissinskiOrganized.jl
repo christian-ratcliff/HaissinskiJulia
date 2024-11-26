@@ -1,6 +1,7 @@
 """
     Module: Beam Evolution Simulation
 
+
 This module implements a high-performance beam evolution simulation for particle accelerators,
 including functionality for particle generation, evolution tracking, and data visualization.
 
@@ -105,7 +106,7 @@ Container for particle states across multiple turns, optimized for efficient mem
 beam = BeamTurn{Float64}(1000, 10000)  # 1000 turns, 10000 particles
 ```
 """
-struct BeamTurn{T,N}
+struct BeamTurn{T<:Float64}
     states::Array{StructArray{ParticleState{T}}, 1}
 end
 
@@ -161,18 +162,68 @@ Constructor for BeamTurn object to store particle states across multiple turns.
 beam = BeamTurn{Float64}(1000, 10000)  # For 1000 turns, 10000 particles
 ```
 """
+# function BeamTurn{T}(n_turns::Integer, n_particles::Integer) where T
+#     states = SVector{n_turns+1}(
+#         StructArray{ParticleState{T}}((
+#             Vector{T}(undef, n_particles),
+#             Vector{T}(undef, n_particles),
+#             Vector{T}(undef, n_particles)
+#         )) for _ in 1:n_turns+1
+#     )
+#     return BeamTurn{T, n_turns+1}(states)
+# end
+# function BeamTurn{T}(n_turns::Integer, n_particles::Integer) where T
+#     # Pre-allocate the base arrays first
+#     n_chunks = Threads.nthreads()
+#     chunk_size = cld(n_turns + 1, n_chunks)
+#     states = Vector{StructArray{ParticleState{T}}}(undef, n_turns + 1)
+    
+#     # Parallel initialization by chunks
+#     Threads.@threads for chunk in 1:n_chunks
+#         start_idx = (chunk - 1) * chunk_size + 1
+#         end_idx = min(chunk * chunk_size, n_turns + 1)
+        
+#         for i in start_idx:end_idx
+#             states[i] = StructArray{ParticleState{T}}((
+#                 Vector{T}(undef, n_particles),
+#                 Vector{T}(undef, n_particles),
+#                 Vector{T}(undef, n_particles)
+#             ))
+#         end
+#     end
+    
+#     return BeamTurn{T, n_turns+1}(SVector{n_turns+1}(states))
+# end
 function BeamTurn{T}(n_turns::Integer, n_particles::Integer) where T
-    states = SVector{n_turns+1}(
-        StructArray{ParticleState{T}}((
-            Vector{T}(undef, n_particles),
-            Vector{T}(undef, n_particles),
-            Vector{T}(undef, n_particles)
-        )) for _ in 1:n_turns+1
-    )
-    return BeamTurn{T, n_turns+1}(states)
+    # Preallocate with exact sizes and disable GC during critical allocation
+    GC.enable(false)  # Temporarily disable GC
+    try
+        total_size = n_particles * (n_turns + 1)
+        # Preallocate arrays with exact known size
+        x_data = Vector{T}(undef, total_size)
+        px_data = Vector{T}(undef, total_size)
+        z_data = Vector{T}(undef, total_size)
+        
+        # Preallocate vector of states with exact size
+        states = Vector{StructArray{ParticleState{T}}}(undef, n_turns + 1)
+        
+        # Single threaded view creation (sometimes faster due to less GC pressure)
+        @inbounds for i in 1:n_turns+1
+            idx_range = ((i-1)*n_particles + 1):(i*n_particles)
+            states[i] = StructArray{ParticleState{T}}((
+                view(x_data, idx_range),
+                view(px_data, idx_range),
+                view(z_data, idx_range)
+            ))
+        end
+        
+        # return BeamTurn{T}(SVector{n_turns+1}(states))
+        return BeamTurn{T}(states)
+    finally
+        GC.enable(true)  # Re-enable GC
+        # Single full collection after allocation
+    end
 end
-
-
 #=
 High-Level Simulation Functions
 =#
@@ -546,11 +597,11 @@ function longitudinal_evolve(
     η0 = α_c - 1/(γ0^2)
     sin_ϕs = sin(ϕs)
     rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
-    
+    σ_E0 = std(particle_states.ΔE)
     # Initialize sizes and buffers
     n_particles = length(particle_states.z)
     buffers = create_simulation_buffers(n_particles, Int(n_particles/10), T)
-    
+    ΔE_before = Vector{Float64}(undef, n_particles)
     particle_trajectory = BeamTurn{T}(n_turns, n_particles)
     @views particle_trajectory.states[1] .= particle_states
 
@@ -654,7 +705,7 @@ function longitudinal_evolve(
         # Quantum excitation
         if use_excitation
             ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
-            excitation = sqrt(1-(1-∂U_∂E)^2) * σ_E
+            excitation = sqrt(1-(1-∂U_∂E)^2) * σ_E0
             randn!(buffers.potential)
             @turbo for i in 1:n_particles
                 particle_states.ΔE[i] += excitation * buffers.potential[i]
@@ -668,6 +719,105 @@ function longitudinal_evolve(
             ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
             @turbo for i in 1:n_particles
                 particle_states.ΔE[i] *= (1 - ∂U_∂E)
+            end
+        end
+        
+        
+        
+        # Update longitudinal positions
+        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+        @turbo for i in 1:n_particles
+            particle_states.z[i] = (-particle_states.ϕ[i] + ϕs) / rf_factor
+        end
+        @turbo for i in 1:n_particles
+            ΔE_before[i] = particle_states.ΔE[i]
+        end
+    
+        # Apply wakefield effects if enabled
+        if use_wakefield
+            # ν_s = sqrt(voltage * harmonic * α_c / (2π * E0))
+            # curr = (abs(η0) / η0) * ELECTRON_CHARGE / (2 * π * ν_s * σ_E) * 
+            #        (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles
+            curr::Float64  =  (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/acc_radius * σ_z / (η0*σ_E0^2)
+
+            if plot_potential && plot_WF
+                apply_wakefield_inplace!(
+                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
+                    n_particles, curr, σ_z, bin_edges
+                )
+                if update_E0
+                    E0 += mean(particle_states.ΔE .- ΔE_before)
+                    particle_states.ΔE .-= mean(particle_states.ΔE .- ΔE_before)
+                end
+                # Store potential plot
+                fig = Figure(size=(800, 500))
+                ax = Axis(fig[1, 1], xlabel=L"z / \sigma_z", ylabel=L"\mathrm{Potential}")
+                Label(fig[1, 1, Top()], "Turn $(turn)", fontsize = 20)
+                scatter!(ax,
+                    particle_states.z / σ_z,
+                    buffers.potential,
+                    markersize = 3
+                )
+                potential_plots[turn] = fig
+
+                # Store wakefield plot
+                fig2 = Figure(size=(800, 500))
+                ax2 = Axis(fig2[1, 1], xlabel=L"z", ylabel=L"\mathrm{WF}")
+                Label(fig2[1, 1, Top()], "Turn $(turn)", fontsize = 20)
+                scatter!(ax2,
+                    particle_states.z,
+                    buffers.WF,
+                    markersize = 3
+                )
+                WF_plots[turn] = fig2
+                
+            elseif plot_WF && !plot_potential
+                apply_wakefield_inplace!(
+                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
+                    n_particles, curr, σ_z, bin_edges
+                )
+                if update_E0
+                    E0 += mean(particle_states.ΔE .- ΔE_before)
+                    particle_states.ΔE .-= mean(particle_states.ΔE .- ΔE_before)
+                end
+                fig2 = Figure(size=(800, 500))
+                ax2 = Axis(fig2[1, 1], xlabel=L"z", ylabel=L"\mathrm{WF}")
+                Label(fig2[1, 1, Top()], "Turn $(turn)", fontsize = 20)
+                xlims!(ax2, -.02, 0)
+                scatter!(ax2,
+                    particle_states.z,
+                    buffers.WF,
+                    markersize = 3
+                )
+                WF_plots[turn] = fig2
+
+            elseif plot_potential && !plot_WF
+                apply_wakefield_inplace!(
+                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
+                    n_particles, curr, σ_z, bin_edges
+                )
+                if update_E0
+                    E0 += mean(particle_states.ΔE .- ΔE_before)
+                    particle_states.ΔE .-= mean(particle_states.ΔE .- ΔE_before)
+                end
+                fig = Figure(size=(800, 500))
+                ax = Axis(fig[1, 1], xlabel=L"z / \sigma_z", ylabel=L"\mathrm{Potential}")
+                Label(fig[1, 1, Top()], "Turn $(turn)", fontsize = 20)
+                scatter!(ax,
+                    particle_states.z /σ_z,
+                    buffers.potential,
+                    markersize = 3
+                )
+                potential_plots[turn] = fig
+            else
+                apply_wakefield_inplace!(
+                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
+                    n_particles, curr, σ_z, bin_edges
+                )
+                if update_E0
+                    E0 += mean(particle_states.ΔE .- ΔE_before)
+                    particle_states.ΔE .-= mean(particle_states.ΔE .- ΔE_before)
+                end
             end
         end
         
@@ -697,88 +847,6 @@ function longitudinal_evolve(
                 particle_states.ϕ[i] += coeff * particle_states.ΔE[i]
             end
         end
-        
-        # Update longitudinal positions
-        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
-        @turbo for i in 1:n_particles
-            particle_states.z[i] = (-particle_states.ϕ[i] + ϕs) / rf_factor
-        end
-    
-        # Apply wakefield effects if enabled
-        if use_wakefield
-            ν_s = sqrt(voltage * harmonic * α_c / (2π * E0))
-            curr = (abs(η0) / η0) * ELECTRON_CHARGE / (2 * π * ν_s * σ_E) * 
-                   (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles
-            
-            if plot_potential && plot_WF
-                apply_wakefield_inplace!(
-                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
-                    n_particles, curr, σ_z, bin_edges
-                )
-                
-                # Store potential plot
-                fig = Figure(size=(800, 500))
-                ax = Axis(fig[1, 1], xlabel=L"z / \sigma_z", ylabel=L"\mathrm{Potential}")
-                Label(fig[1, 1, Top()], "Turn $(turn)", fontsize = 20)
-                scatter!(ax,
-                    particle_states.z / σ_z,
-                    buffers.potential,
-                    markersize = 3
-                )
-                potential_plots[turn] = fig
-
-                # Store wakefield plot
-                fig2 = Figure(size=(800, 500))
-                ax2 = Axis(fig2[1, 1], xlabel=L"z", ylabel=L"\mathrm{WF}")
-                Label(fig2[1, 1, Top()], "Turn $(turn)", fontsize = 20)
-                scatter!(ax2,
-                    particle_states.z,
-                    buffers.WF,
-                    markersize = 3
-                )
-                WF_plots[turn] = fig2
-                
-            elseif plot_WF && !plot_potential
-                apply_wakefield_inplace!(
-                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
-                    n_particles, curr, σ_z, bin_edges
-                )
-                
-                fig2 = Figure(size=(800, 500))
-                ax2 = Axis(fig2[1, 1], xlabel=L"z", ylabel=L"\mathrm{WF}")
-                Label(fig2[1, 1, Top()], "Turn $(turn)", fontsize = 20)
-                xlims!(ax2, -.02, 0)
-                scatter!(ax2,
-                    particle_states.z,
-                    buffers.WF,
-                    markersize = 3
-                )
-                WF_plots[turn] = fig2
-
-            elseif plot_potential && !plot_WF
-                apply_wakefield_inplace!(
-                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
-                    n_particles, curr, σ_z, bin_edges
-                )
-                
-                fig = Figure(size=(800, 500))
-                ax = Axis(fig[1, 1], xlabel=L"z / \sigma_z", ylabel=L"\mathrm{Potential}")
-                Label(fig[1, 1, Top()], "Turn $(turn)", fontsize = 20)
-                scatter!(ax,
-                    particle_states.z /σ_z,
-                    buffers.potential,
-                    markersize = 3
-                )
-                potential_plots[turn] = fig
-            else
-                apply_wakefield_inplace!(
-                    particle_states, buffers, wake_factor, wake_sqrt, cτ,
-                    n_particles, curr, σ_z, bin_edges
-                )
-            end
-        end
-        
-        
         
         
 
@@ -921,16 +989,19 @@ function longitudinal_evolve!(
     η0::Float64 = α_c - 1/(γ0^2)
     sin_ϕs::Float64 = sin(ϕs)
     rf_factor::Float64 = freq_rf * 2π / (β0 * SPEED_LIGHT)
-    
-    # temp_std_vec = Any[]
 # 
+    σ_E0::Float64 = std(particle_states.ΔE)
+    σ_z0::Float64 = std(particle_states.z)
     # Initialize buffers
     n_particles::Int64 = length(particle_states.z)
     buffers = create_simulation_buffers(n_particles, Int(n_particles/10), T)
 
     nbins::Int64 = next_power_of_two(Int(10^(ceil(Int, log10(length(particle_states.z))-2))))
     bin_edges = range(-7.5*σ_z, 7.5*σ_z, length=nbins+1)
-    
+
+    ΔE_before = Vector{Float64}(undef, n_particles)
+    # temp_std_vec = Float64[]
+
     σ_E_buffer = CircularBuffer{Float64}(50::Int64)
     E0_buffer = CircularBuffer{Float64}(50::Int64)
     z_buffer = CircularBuffer{Float64}(50::Int64)
@@ -939,9 +1010,9 @@ function longitudinal_evolve!(
     push!(z_buffer,σ_z::Float64)::CircularBuffer{Float64}
 
     # Setup for scatter plots if requested
-    scatter_plots::Union{Nothing, Vector{Figure}} = plot_scatter ? Vector{Figure}(undef, n_turns+1) : nothing
-    potential_plots::Union{Nothing, Vector{Figure}} = plot_potential ? Vector{Figure}(undef, n_turns+1) : nothing
-    WF_plots::Union{Nothing, Vector{Figure}} = plot_WF ? Vector{Figure}(undef, n_turns+1) : nothing
+    scatter_plots= plot_scatter ? Vector{Figure}(undef, n_turns+1) : nothing
+    potential_plots = plot_potential ? Vector{Figure}(undef, n_turns+1) : nothing
+    WF_plots = plot_WF ? Vector{Figure}(undef, n_turns+1) : nothing
     if plot_scatter
 
         boundary_points::Tuple{Vector{Float64}, Vector{Float64}} = make_separatrix(ϕs, voltage, E0, harmonic, η0, β0)
@@ -956,8 +1027,8 @@ function longitudinal_evolve!(
             particle_states.ΔE / σ_E,
             markersize = 1, color = :black)
         lines!(ax, boundary_obs[][1], boundary_obs[][2] / σ_E, color=:red)
-        xlims!(ax, 0, 3π/2)
-        ylims!(ax, minimum(boundary_points[2]) / σ_E-5, maximum(boundary_points[2]) / σ_E+5)
+        # xlims!(ax, 0, 3π/2)
+        # ylims!(ax, minimum(boundary_points[2]) / σ_E-5, maximum(boundary_points[2]) / σ_E+5)
         scatter_plots[1] = fig
     end
     
@@ -980,15 +1051,19 @@ function longitudinal_evolve!(
         # RF voltage kick
         σ_E::Float64 = std(particle_states.ΔE)
         σ_z::Float64 = std(particle_states.z)
+
+
         
         @turbo for i in 1:n_particles
             particle_states.ΔE[i] += voltage * (sin(particle_states.ϕ[i]) - sin_ϕs)
         end
+        
+
         # Quantum excitation
         if use_excitation
 
             ∂U_∂E::Float64 = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
-            excitation::Float64 = sqrt(1-(1-∂U_∂E)^2) * σ_E
+            excitation::Float64 = sqrt(1-(1-∂U_∂E)^2) * σ_E0
 
             randn!(buffers.potential)::Vector{Float64}
             for i in 1:n_particles
@@ -1004,51 +1079,29 @@ function longitudinal_evolve!(
                 particle_states.ΔE[i] *= (1 - ∂U_∂E)
             end
         end
-        
-        # Update reference energy if needed
-        if update_E0
-            E0 += voltage * sin_ϕs
-            γ0= E0/mass 
-            β0= sqrt(1 - 1/γ0^2)
-            if SR_damping
-                E0 -= ∂U_∂E * E0  / 4
-                γ0 = E0/mass 
-                β0= sqrt(1 - 1/γ0^2)
-            end
-        end
-        
-        # Update phase advance
-        if update_η
-            @turbo for i in 1:n_particles
-                buffers.Δγ[i] = particle_states.ΔE[i] / mass
-                buffers.η[i] = α_c - 1/(γ0 + buffers.Δγ[i])^2
-                buffers.coeff[i] = 2π * harmonic * buffers.η[i] / (β0 * β0 * E0)
-                particle_states.ϕ[i] += buffers.coeff[i] * particle_states.ΔE[i]
-            end
-        else
-            coeff::Float64 = 2π * harmonic * η0 / (β0 * β0 * E0)
-            @turbo for i in 1:n_particles
-                particle_states.ϕ[i] += coeff * particle_states.ΔE[i]
-            end
-        end
-        
+
         # Update longitudinal positions
-        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+        # rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+        # @turbo for i in 1:n_particles
+        #     particle_states.z[i] = (-particle_states.ϕ[i] + ϕs) / rf_factor
+        # end
         @turbo for i in 1:n_particles
-            particle_states.z[i] = (-particle_states.ϕ[i] + ϕs) / rf_factor
+            ΔE_before[i] = particle_states.ΔE[i]
         end
 
         # Apply wakefield effects if enabled
         if use_wakefield
-            ν_s::Float64 = sqrt(voltage * harmonic * α_c / (2π * E0))
-            curr::Float64 = (abs(η0) / η0) * ELECTRON_CHARGE / (2 * π * ν_s * σ_E) * 
-                   (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles
-            
+            # ν_s::Float64 = sqrt(voltage * harmonic * α_c / (2π * E0))
+            curr::Float64  =  (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/acc_radius * σ_z / (η0*σ_E0^2)
+            # curr::Float64 = (abs(η0) / η0) * ELECTRON_CHARGE / (2 * π * ν_s * σ_E) * (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles
+            # println("Current: ", curr, " alt:", (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/acc_radius * σ_z0 / (η0*σ_E0^2) )
+
             if plot_potential && plot_WF
                 apply_wakefield_inplace!(
                     particle_states, buffers, wake_factor, wake_sqrt, cτ,
                     n_particles, curr, σ_z, bin_edges
                 )
+                
                 
                 # Store potential plot
                 fig = Figure(size=(800, 500))
@@ -1080,6 +1133,7 @@ function longitudinal_evolve!(
                     n_particles, curr, σ_z, bin_edges
                 )
                 
+                
                 fig2 = Figure(size=(800, 500))
                 ax2 = Axis(fig2[1, 1], xlabel=L"z", ylabel=L"\mathrm{WF}")
                 Label(fig2[1, 1, Top()], "Turn $(turn)", fontsize = 20)
@@ -1097,6 +1151,7 @@ function longitudinal_evolve!(
                     n_particles, curr, σ_z, bin_edges
                 )
                 
+                
                 fig = Figure(size=(800, 500))
                 ax = Axis(fig[1, 1], xlabel=L"z / \sigma_z", ylabel=L"\mathrm{Potential}")
                 Label(fig[1, 1, Top()], "Turn $(turn)", fontsize = 20)
@@ -1113,10 +1168,49 @@ function longitudinal_evolve!(
                     particle_states, buffers, wake_factor, wake_sqrt, cτ,
                     n_particles, curr, σ_z, bin_edges
                 )
+                
+            end
+        end
+
+        # Update reference energy if needed
+        if update_E0
+            E0 += voltage * sin_ϕs
+            γ0= E0/mass 
+            β0= sqrt(1 - 1/γ0^2)
+            if SR_damping
+                E0 -= ∂U_∂E * E0  / 4
+                γ0 = E0/mass 
+                β0= sqrt(1 - 1/γ0^2)
+            end
+            if use_wakefield
+                # E0 += mean(particle_states.ΔE .- ΔE_before)
+                # particle_states.ΔE .-= mean(particle_states.ΔE .- ΔE_before)
+                E0 += mean(particle_states.ΔE)
+                particle_states.ΔE .-= mean(particle_states.ΔE)
+            end
+        end
+        
+        # Update phase advance
+        if update_η
+            @turbo for i in 1:n_particles
+                buffers.Δγ[i] = particle_states.ΔE[i] / mass
+                buffers.η[i] = α_c - 1/(γ0 + buffers.Δγ[i])^2
+                buffers.coeff[i] = 2π * harmonic * buffers.η[i] / (β0 * β0 * E0)
+                particle_states.ϕ[i] += buffers.coeff[i] * particle_states.ΔE[i]
+            end
+        else
+            coeff::Float64 = 2π * harmonic * η0 / (β0 * β0 * E0)
+            @turbo for i in 1:n_particles
+                particle_states.ϕ[i] += coeff * particle_states.ΔE[i]
             end
         end
         
         
+        
+        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+        @turbo for i in 1:n_particles
+            particle_states.z[i] = (-particle_states.ϕ[i] + ϕs) / rf_factor
+        end
         
         # Generate scatter plot if requested
         if plot_scatter
@@ -1127,20 +1221,22 @@ function longitudinal_evolve!(
                 particle_states.ϕ ,
                 particle_states.ΔE / σ_E,
                 markersize = 1, color = :black)
-            scatter!(ax, 
-                5*π/6,
-                0,
-                markersize = 10, color = :blue)
-            lines!(ax, boundary_obs[][1], boundary_obs[][2] / σ_E, color=:red)
-            xlims!(ax, 0, 3π/2)
-            ylims!(ax, minimum(boundary_points[2]) / σ_E-5, maximum(boundary_points[2]) / σ_E+5)
-            scatter_plots[turn+1]::Figure = fig
+            # scatter!(ax, 
+            #     ϕs,
+            #     0,
+            #     markersize = 10, color = :blue)
+            # lines!(ax, boundary_obs[][1], boundary_obs[][2] / σ_E, color=:red)
+            # xlims!(ax, 0, 3π/2)
+            # ylims!(ax, minimum(boundary_points[2]) / σ_E-5, maximum(boundary_points[2]) / σ_E+5)
+
+            # fig = plot_macro_particles(particle_states, ϕs, boundary_obs, σ_E, turn; nbins=(100,100))
+            scatter_plots[turn+1] = fig
         end
 
         push!(σ_E_buffer,σ_E)::CircularBuffer{Float64}
         push!(E0_buffer,E0)::CircularBuffer{Float64}
         push!(z_buffer,σ_z)::CircularBuffer{Float64}
-        if abs(mean(σ_E_buffer)/mean(E0_buffer) - std(particle_states.ΔE)/E0) < 1e-9
+        if abs(mean(σ_E_buffer)/mean(E0_buffer) - std(particle_states.ΔE)/E0) < 1e-10 #&& mean(σ_E_buffer) - σ_E0 < .001
             println("Converged at turn $turn with σ_E = ", mean(σ_E_buffer))
             σ_E = mean(σ_E_buffer)
             σ_z = mean(z_buffer)
@@ -1148,6 +1244,7 @@ function longitudinal_evolve!(
             return (σ_E, σ_z, E0)
         end
 
+        # push!(temp_std_vec, std(particle_states.ΔE))
         # Update progress bar
         if display_counter
             next!(p)
@@ -1156,7 +1253,8 @@ function longitudinal_evolve!(
     end
     ###Use multiple dispatch and turn this into many functions
     if plot_potential && plot_WF && plot_scatter
-        return (scatter_plots, potential_plots, WF_plots, σ_E, σ_z)
+        println("All plots requested")
+        return (scatter_plots, potential_plots, WF_plots, σ_E, σ_z, E0)
     elseif plot_potential && plot_scatter && !plot_WF
         return (scatter_plots, potential_plots, σ_E, σ_z)
     elseif plot_WF && plot_scatter && !plot_potential
@@ -1491,81 +1589,160 @@ Generate an optimized animation of beam evolution showing phase space and distri
 all_animate_optimized(1000, beam_data, 0.0, 1e-3, mass_electron, 1e6, 400, 3e9, 1e-4, 1e-3)
 ```
 """
+
 function all_animate_optimized(
     n_turns::Int64,
     particles_out::BeamTurn{Float64},
     ϕs::Float64, α_c::Float64, mass::Float64, voltage::Float64,
     harmonic::Int64, E0::Float64, σ_E::Float64, σ_z::Float64,
     filename::String="all_animation_optimized.mp4")
+ 
+    # Physics calculations 
+    γ = E0/mass
+    β = sqrt(1 - 1/γ^2)
+    η = α_c - 1/γ^2
+    boundary_points = make_separatrix(ϕs, voltage, E0, harmonic, η, β)
+ 
+    # Preallocate arrays for filtering
+    n_particles = length(particles_out.states[1])
+    z_filtered = Vector{Float64}(undef, n_particles)
+    E_filtered = Vector{Float64}(undef, n_particles)
     
-    # Create output directory
-    timestamp::String = string(Dates.format(Dates.now(), "yyyy-mm-dd"))
-    folder_storage::String = "Haissinski/particle_sims/turns$(n_turns)_particles$(length(particles_out[1]))"
-    folder_storage = joinpath(folder_storage, timestamp)
-    mkpath(folder_storage)
-    filename::tringg = joinpath(folder_storage, filename)
-
-    # Physics calculations
-    γ::Float64 = E0/mass
-    β::Float64 = sqrt(1 - 1/γ^2)
-    η::Float64 = α_c - 1/γ^2
-    
-    boundary_points::Tuple{Vector{Float64}, Vector{Float64}} = make_separatrix(ϕs, voltage, E0, harmonic, η, β)
-    
-    # Pre-compute densities
-    # z_densities, E_densities = precompute_densities(particles_out, σ_z, σ_E)
-    
+    # Preallocate KDE grid
+    kde_points = 200
+    x_grid = range(-5, 5, length=kde_points)
+ 
     # Setup figure
     println("Setting up figure...")
-    fig::Figure = Figure(;size=(1400, 900), font="Arial")
-    ax_z::Axis = Axis(fig[1, 1], xlabel=L"\frac{z}{\sigma _{z}}", ylabel="Count")
-    ax_E::Axis = Axis(fig[1, 2], xlabel=L"\frac{\Delta E}{\sigma _{E}}", ylabel="Count")
-    ax_phase::Axis = Axis(fig[2, 1:2], xlabel=L"\phi", ylabel=L"\frac{\Delta E}{\sigma _{E}}")
-    title_label::Label = Label(fig[0, :], "Turn 1", fontsize=20, halign=:center)
-    
+    fig = Figure(;size=(1400, 900), font="Arial")
+    ax_z = Axis(fig[1, 1], xlabel=L"\frac{z}{\sigma _{z}}", ylabel="Count")
+    ax_E = Axis(fig[1, 2], xlabel=L"\frac{\Delta E}{\sigma _{E}}", ylabel="Count")
+    ax_phase = Axis(fig[2, 1:2], xlabel=L"\phi", ylabel=L"\frac{\Delta E}{\sigma _{E}}")
+    title_label = Label(fig[0, :], "Turn 1", fontsize=20, halign=:center)
+ 
     # Set static limits
     ylims!(ax_z, (0, 0.5))
     ylims!(ax_E, (0, .5))
     xlims!(ax_z, (-5, 5))
     xlims!(ax_E, (-5, 5))
-    xlims!(ax_phase, (0, 3π/2))
-    
-    
-    boundary_obs = Observable((boundary_points[1], boundary_points[2]))
-    
+    xlims!(ax_phase, (ϕs - 0.08, ϕs + 0.08))
+ 
+    # Pre-create observables
+    # boundary_obs = Observable(Point2f.(boundary_points[1], boundary_points[2]))
+    initial_points = Point2f.(particles_out.states[1].ϕ, particles_out.states[1].ΔE ./ σ_E)
+    scatter_points = Observable(initial_points)
+    z_line = Observable(Point2f.(x_grid, zeros(kde_points)))
+    E_line = Observable(Point2f.(x_grid, zeros(kde_points)))
+ 
+    # Create persistent plot objects
+    phase_scatter = scatter!(ax_phase, scatter_points, color=:black, markersize=1)
+    # phase_boundary = lines!(ax_phase, boundary_obs, color=:red)
+    z_dist = lines!(ax_z, z_line, color=:red, linewidth=2)
+    E_dist = lines!(ax_E, E_line, color=:red, linewidth=2)
+ 
     p = Progress(n_turns, desc="Generating animation: ")
     
     @inbounds record(fig, filename, 1:n_turns; framerate=100) do frame_idx
-        empty!(ax_z)
-        empty!(ax_E)
-        empty!(ax_phase)
+        frame_data = particles_out.states[frame_idx]
         
-        frame_data::StructArray{ParticleState{Float64}} = particles_out[frame_idx]
+        # Update σ values
         σ_E = std(frame_data.ΔE)
-        σ_z= std(frame_data.z)
-        ylims!(ax_phase, (minimum(boundary_points[2])/σ_E - 4,maximum(boundary_points[2])/σ_E + 4))
-        scatter!(ax_phase, frame_data.ϕ, frame_data.ΔE/σ_E, color=:black, markersize=1)
-        lines!(ax_phase, boundary_obs[][1], boundary_obs[][2] / σ_E, color=:red)
+        σ_z = std(frame_data.z)
         
-        z_data::Vector{Float64} = frame_data.z
-        E_data::Vector{Float64} = frame_data.ΔE
+        # Filter and normalize in single pass
+        z_count = 0
+        E_count = 0
+        @inbounds for i in 1:n_particles
+            z_norm = frame_data.z[i] / σ_z
+            E_norm = frame_data.ΔE[i] / σ_E
+            if abs(z_norm) < 5
+                z_count += 1
+                z_filtered[z_count] = z_norm
+            end
+            if abs(E_norm) < 5
+                E_count += 1
+                E_filtered[E_count] = E_norm
+            end
+        end
         
-        z_normalized = @view(z_data[.-5 .< z_data ./ σ_z .< 5]) ./ σ_z
-        E_normalized = @view(E_data[.-5 .< E_data ./ σ_E .< 5]) ./ σ_E
+        # Update scatter data
+        scatter_points[] = Point2f.(frame_data.ϕ, frame_data.ΔE ./ σ_E)
         
-        z_density::Tuple{Vector{Float64}, Vector{Float64}} = kde(z_normalized, boundary=(-5,5), npoints=200)
-        E_density::Tuple{Vector{Float64}, Vector{Float64}} = kde(E_normalized, boundary=(-5,5), npoints=200)
-
+        # Compute KDEs 
+        Threads.@threads for i in 1:2
+            if i == 1
+                z_kde = kde(view(z_filtered, 1:z_count), boundary=(-5,5), npoints=200)
+                z_line[] = Point2f.(z_kde.x, z_kde.density)
+            else
+                E_kde = kde(view(E_filtered, 1:E_count), boundary=(-5,5), npoints=200)
+                E_line[] = Point2f.(E_kde.x, E_kde.density)
+            end
+        end
         
-        
-        lines!(ax_z, z_density.x, z_density.density, color=:red, linewidth=2)
-        lines!(ax_E, E_density.x, E_density.density, color=:red, linewidth=2)
+        # Update phase space plot
+        ylims!(ax_phase, (-5, 5))
+        # boundary_obs[] = Point2f.(boundary_points[1], boundary_points[2] ./ σ_E)
         
         title_label.text = "Turn $frame_idx"
         next!(p)
     end
     println("Animation complete!")
 end
+
+function plot_macro_particles(particle_states, ϕs, boundary_obs, σ_E, turn;
+    nbins=(50, 50))
+    # Normalize ΔE
+    ΔE_normalized = particle_states.ΔE ./ σ_E
+
+    # Calculate bin edges
+    ϕ_edges = range(minimum(particle_states.ϕ), maximum(particle_states.ϕ), length=nbins[1]+1)
+    ΔE_edges = range(minimum(ΔE_normalized), maximum(ΔE_normalized), length=nbins[2]+1)
+
+    # ϕ_edges = range(minimum(boundary_obs[][1]), maximum(boundary_obs[][1]), length=nbins[1]+1)
+    # ΔE_edges = range(minimum(boundary_obs[][2]/ σ_E), maximum(boundary_obs[][2] / σ_E), length=nbins[2]+1)
+    # Create FHist 2D histogram with explicit edges
+    h = Hist2D((particle_states.ϕ, ΔE_normalized) ; binedges = (ϕ_edges, ΔE_edges))
+
+    # # Fill histogram
+    # fill!(h, particle_states.ϕ, ΔE_normalized)
+
+    # Get bin centers
+    centers_ϕ = (ϕ_edges[1:end-1] .+ ϕ_edges[2:end]) ./ 2
+    centers_ΔE = (ΔE_edges[1:end-1] .+ ΔE_edges[2:end]) ./ 2
+    # counts = h.bincounts
+
+    # Find non-zero bins
+    # nz_idx = findall(counts .> 0)
+    # row_idx = getindex.(nz_idx, 1)
+    # col_idx = getindex.(nz_idx, 2)
+
+    # # Extract coordinates and weights for non-zero bins
+    # x_plot = centers_ϕ[row_idx]
+    # y_plot = centers_ΔE[col_idx]
+    # weights = counts[nz_idx]
+
+    # Create figure
+    fig = Figure(size=(800, 500))
+    ax = Axis(fig[1, 1], 
+    xlabel=L"\phi", 
+    ylabel=L"\frac{\Delta E}{\sigma_E}")
+
+    # scatter!(ax, ϕs, zeros(length(ϕs)), 
+    #         markersize=10, color=:blue)
+    # lines!(ax, boundary_obs[][1], boundary_obs[][2] ./ σ_E, 
+    #        color=(:red, 0.8), linewidth=2)
+    hm = heatmap!(ax, centers_ϕ, centers_ΔE, h.bincounts,
+                  colormap=:viridis)
+
+    Label(fig[1, 1, Top()], "Turn $(turn+1)", fontsize=20)
+    # Colorbar(fig[1, 2], label="Particles per bin", colormap=:viridis,
+    # limits=(minimum(weights), maximum(weights)))
+    Colorbar(fig[1, 2], hm, label="Particle density")
+
+    return fig
+end
+
+
 
 """
     animate_one_by_one(n_turns, particle_states, ϕs, α_c, mass, voltage, harmonic, E0, σ_E, σ_z, 
@@ -1614,7 +1791,7 @@ function animate_one_by_one(
 
     # Directory setup
     timestamp = string(Dates.format(Dates.now(), "yyyy-mm-dd"))
-    folder_storage = "Haissinski/particle_sims/turns$(n_turns)_particles$(length(particle_states))"
+    folder_storage = "particle_sims/turns$(n_turns)_particles$(length(particle_states))"
     folder_storage = joinpath(folder_storage, timestamp)
     mkpath(folder_storage)
     filename = joinpath(folder_storage, filename)
@@ -1643,11 +1820,7 @@ function animate_one_by_one(
     xlims!(ax_E, (-5, 5))
     xlims!(ax_phase, (0, 3π/2))
 
-    σ_E, σ_z, E0 =  longitudinal_evolve!(
-            frame_itv, particle_states, ϕs, α_c, mass, voltage,
-            harmonic, acc_radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
-            use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-            use_excitation=true, display_counter=false)
+    
     
     
     boundary_obs = Observable((boundary_points[1], boundary_points[2]))
@@ -1658,6 +1831,12 @@ function animate_one_by_one(
         empty!(ax_z)
         empty!(ax_E)
         empty!(ax_phase)
+
+        σ_E, σ_z, E0 =  longitudinal_evolve!(
+            frame_itv, particle_states, ϕs, α_c, mass, voltage,
+            harmonic, acc_radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
+            use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
+            use_excitation=true, display_counter=false)
         
         frame_data = particle_states
         
@@ -1681,18 +1860,14 @@ function animate_one_by_one(
         
         title_label.text = "Turn $frame_idx"
         
-        σ_E, σ_z, E0 =  longitudinal_evolve!(
-            frame_itv, particle_states, ϕs, α_c, mass, voltage,
-            harmonic, acc_radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
-            use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-            use_excitation=true, display_counter=false)
+        
             
         next!(p)
     end
     println("Animation complete!")
 end
 
-"""
+ """
     calculate_histogram(data::Vector{Float64}, bins::Int64) -> Tuple{Vector{Float64}, Vector{Float64}}
 
 Calculate histogram of particle distribution with optimized binning.
@@ -1775,22 +1950,53 @@ Create pre-allocated buffers for efficient simulation calculations.
 buffers = create_simulation_buffers(10000, 100)
 ```
 """
+# function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Float64)
+#     SimulationBuffers{T}(
+#         Vector{T}(undef, n_particles),  # WF
+#         Vector{T}(undef, n_particles),  # potential
+#         Vector{T}(undef, n_particles),  # Δγ
+#         Vector{T}(undef, n_particles),  # η
+#         Vector{T}(undef, n_particles),  # coeff
+#         Vector{T}(undef, n_particles),  # temp_z
+#         Vector{T}(undef, n_particles),  # temp_ΔE
+#         Vector{T}(undef, n_particles),  # temp_ϕ
+#         Vector{T}(undef, nbins),       # WF_temp
+#         Vector{T}(undef, nbins),       # λ
+#         Vector{Complex{T}}(undef, nbins) # convol
+#     )
+# end
 function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Float64)
+    # Pre-allocate all vectors in parallel groups based on size
+    particle_vectors = Vector{Vector{T}}(undef, 8)  # For n_particles sized vectors
+    bin_vectors = Vector{Vector{T}}(undef, 2)      # For nbins sized vectors
+    
+    # Initialize n_particles sized vectors in parallel
+    Threads.@threads for i in 1:8
+        particle_vectors[i] = Vector{T}(undef, n_particles)
+    end
+    
+    # Initialize nbins sized vectors in parallel
+    Threads.@threads for i in 1:2
+        bin_vectors[i] = Vector{T}(undef, nbins)
+    end
+    
+    # Complex vector (single allocation)
+    complex_vector = Vector{Complex{T}}(undef, nbins)
+    
     SimulationBuffers{T}(
-        Vector{T}(undef, n_particles),  # WF
-        Vector{T}(undef, n_particles),  # potential
-        Vector{T}(undef, n_particles),  # Δγ
-        Vector{T}(undef, n_particles),  # η
-        Vector{T}(undef, n_particles),  # coeff
-        Vector{T}(undef, n_particles),  # temp_z
-        Vector{T}(undef, n_particles),  # temp_ΔE
-        Vector{T}(undef, n_particles),  # temp_ϕ
-        Vector{T}(undef, nbins),       # WF_temp
-        Vector{T}(undef, nbins),       # λ
-        Vector{Complex{T}}(undef, nbins) # convol
+        particle_vectors[1],  # WF
+        particle_vectors[2],  # potential
+        particle_vectors[3],  # Δγ
+        particle_vectors[4],  # η
+        particle_vectors[5],  # coeff
+        particle_vectors[6],  # temp_z
+        particle_vectors[7],  # temp_ΔE
+        particle_vectors[8],  # temp_ϕ
+        bin_vectors[1],      # WF_temp
+        bin_vectors[2],      # λ
+        complex_vector       # convol
     )
 end
-
 
 
 """
@@ -1865,16 +2071,18 @@ function make_separatrix(ϕs::Float64, voltage::Float64, energy::Float64,
         Δϕ= π - ϕu - ϕs
         return -cos(ϕu) - cos(ϕs) + sin(ϕs) * Δϕ
     end
-
+    
     # More robust initial bracket for root finding
-    ϕ_lower::Float64= max(-2π, ϕs - 2π)
-    ϕ_upper::Float64= min(2π, ϕs + 2π)
-
+    ϕ_lower::Float64= ϕs - 2π #max(-2π, ϕs - 2π)
+    ϕ_upper::Float64= ϕs + 3π/2 #min(2π, ϕs + 2π)
+    println("f(ϕ_lower) = ", fangle(ϕ_lower))
+    println("f(ϕ_upper) = ", fangle(ϕ_upper))
     # Use more robust root finding method
     ϕ_unstable::Float64 = find_zero(fangle, (ϕ_lower, ϕ_upper), Roots.Brent())
 
     # Optimize the number of points based on the region of interest
-    Δϕ::Float64 = π - ϕs - ϕ_unstable
+    Δϕ::Float64 = 3*π - ϕs - ϕ_unstable
+    println("Δϕ: ", Δϕ, " ϕ_unstable: ", ϕ_unstable)
     n_points::Int64 = max(1000, round(Int, abs(Δϕ) * 500))  # Scale points with separatrix size
 
     # Use LinRange for more efficient memory allocation
@@ -1900,6 +2108,7 @@ function make_separatrix(ϕs::Float64, voltage::Float64, energy::Float64,
 
     return (ϕ_test_total, sep_total)
 end ;
+
 
 
 """
@@ -2092,33 +2301,6 @@ function scatter_particle_data(particle_states::BeamTurn{Float64}, turn_number::
     return fig
 end
 
-"""
-    BeamTurn{T}(n_turns::Integer, n_particles::Integer) where T -> BeamTurn{T,N}
-
-Constructor for BeamTurn object to store particle states across multiple turns.
-
-# Arguments
-- `n_turns::Integer`: Number of turns to simulate
-- `n_particles::Integer`: Number of particles
-
-# Returns
-- `BeamTurn{T,N}`: BeamTurn object with pre-allocated storage
-
-# Example
-```julia
-beam = BeamTurn{Float64}(1000, 10000)  # For 1000 turns, 10000 particles
-```
-"""
-function BeamTurn{T}(n_turns::Integer, n_particles::Integer) where T
-    states = SVector{n_turns+1}(
-        StructArray{ParticleState{T}}((
-            Vector{T}(undef, n_particles),
-            Vector{T}(undef, n_particles),
-            Vector{T}(undef, n_particles)
-        )) for _ in 1:n_turns+1
-    )
-    return BeamTurn{T, n_turns+1}(states)
-end
 
 """
     copyto!(dest::BeamTurn, turn_idx::Integer, src::StructArray{ParticleState{T}}) where T -> BeamTurn
@@ -2305,7 +2487,7 @@ Get number of turns stored in BeamTurn object.
 n_turns = length(beam_trajectory)
 ```
 """
-Base.length(pt::BeamTurn{T,N}) where {T,N} = N
+# Base.length(pt::BeamTurn{T,N}) where {T,N} = N
 
 """
     fast_reset_buffers!(buffers::SimulationBuffers{T}) where T -> Nothing
@@ -2371,7 +2553,6 @@ end
 
 
 
-
 ##############################################################################################################
 
 
@@ -2386,10 +2567,20 @@ pipe_radius::Float64 = .00025 ;
 γ::Float64 = E0_ini/mass ;
 β::Float64 = sqrt(1 - 1/γ^2) ;
 η::Float64= α_c - 1/γ^2 ;
+# sin_ϕs::Float64 = 0.5 ;
+# ϕs::Float64 = 5π/6 ;
+# freq_rf::Float64 = 180.15e7 ;
+
 sin_ϕs::Float64 = 0.5 ;
 ϕs::Float64 = 5π/6 ;
-freq_rf::Float64 = 180.15e7 ;
+freq_rf::Float64 = (ϕs + 10 *π/180) * β * SPEED_LIGHT / (2π) ;
 
+# ϕs::Float64 = π - asin(8.855e-5 * (E0_ini/1e9)^4 / radius^2 / voltage) ; 
+# sin_ϕs::Float64 = sin(ϕs) ;
+# freq_rf::Float64 = (ϕs + 2 *π/180) * β * SPEED_LIGHT / (2π) ;
+println("Frequency of RF: ", freq_rf)
+println("Synchronous phase: ", ϕs)
+println("Sin of synchronous phase: ", sin_ϕs)
 
 μ_E::Float64 = 0. ;
 μ_z::Float64 = 0. ;
@@ -2397,13 +2588,17 @@ freq_rf::Float64 = 180.15e7 ;
 # σ_E0 = 1.938e6
 σ_E0::Float64 = 1e6 ;
 σ_z0::Float64 = sqrt(2 * π) * SPEED_LIGHT / ω_rev * sqrt(α_c*E0_ini/harmonic/voltage/abs(cos(ϕs))) * σ_E0 / E0_ini ;
+println("σ_z0 = ", σ_z0)    
 
+# COMPILE THESE BEFORE PLOTTING
+@time BeamTurn{Float64}(30000, 100000) ;
+@time create_simulation_buffers(10, 10000, Float64) ;
 
 
 # ν_s = sqrt(voltage*harmonic*η*abs(cos(ϕs))/(2*π*energy*β^2))
 # ν_s / (harmonic * abs(η))
 ### WHEN YOU WANT TO SEE POTENTIAL AND WF PLOTS FOR SANITY CHECKS
-n_turns::Int64 = 1000;
+n_turns::Int64 = 1;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
 particles_out, plot_potential, plot_WF= longitudinal_evolve(
     n_turns, particle_states, ϕs, α_c, mass, voltage,
@@ -2414,21 +2609,27 @@ plot_potential[1]
 plot_potential[10]
 plot_potential[50]
 plot_potential[1000]
-plot_WF[10]
+plot_WF[1]
 scatter(particles_out[150].ϕ, particles_out[150].ΔE / σ_E, markersize=1, color=:black)
 
 
 ### Getting video with histrograms, one frame at a time
-n_turns::Int64 = 20000;
+n_turns::Int64 = 15000;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
-particles_out= longitudinal_evolve(
+particles_out, σ_E, σ_z, E0= longitudinal_evolve(
     n_turns, particle_states, ϕs, α_c, mass, voltage,
     harmonic, radius, freq_rf, pipe_radius, E0, σ_E0, σ_z0,
     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
     use_excitation=true, plot_potential=false,plot_WF=false, write_to_file=false, output_file="test1.h5") ;  
-all_animate_optimized(length(particles_out[1]), particles_out[1], ϕs, α_c, mass, voltage, harmonic,E0_ini, σ_E0, σ_z0, "opt_anim_0_1.mp4") ;
-particles_out[end]
+all_animate_optimized(length(particles_out.states), particles_out, ϕs, α_c, mass, voltage, harmonic,E0_ini, σ_E0, σ_z0, "opt_anim.mp4") ;
 
+@time all_animate_optimized(length(particles_out.states), particles_out, ϕs, α_c, mass, voltage, harmonic,E0_ini, σ_E0, σ_z0, "timing.mp4") ;
+#without binning 1e5, 100   77.668863 seconds (178.13 M allocations: 6.094 GiB, 2.36% gc time)
+
+
+
+
+scatter(particles_out.states[end].ϕ, particles_out.states[end].ΔE / σ_E, markersize=1, color=:black)
 ### Getting video with histrograms, multiple frames at a time
 n_turns::Int64 = 100;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
@@ -2436,38 +2637,68 @@ animate_one_by_one(n_turns, particle_states, ϕs, α_c, mass, voltage, harmonic,
     radius, freq_rf, pipe_radius, frame_itv=1, filename = "anim_1_by_1.mp4")
 
 ### To do inplace evolution of particles
-n_turns::Int64 = 1000;
+n_turns::Int64 = 30000;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
-σ_E, σ_z, E0 = longitudinal_evolve!(
+σ_E, σ_z, E0= longitudinal_evolve!(
     n_turns, particle_states, ϕs, α_c, mass, voltage,
     harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
     use_excitation=true);
 
-@descend longitudinal_evolve!(
-    n_turns, particle_states, ϕs, α_c, mass, voltage,
-    harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
-    use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-    use_excitation=true)
-println("σ_E = ", σ_E, " E0 = ", E0)
 scatter(particle_states.ϕ, particle_states.ΔE / σ_E, markersize=1, color=:black)
-# fig = Figure(;size = (800, 500))
-# ax = Axis(fig[1,1], xlabel=L"z / \sigma_z", ylabel="Count", title = "z Distribution")
-hist( particle_states.ΔE / σ_E, bins=100)
+# scatter(particle_states.z / σ_z, particle_states.ΔE / σ_E, markersize=1, color=:black)
 
-hist(particle_states.z / σ_z, bins=100)
 
-# display(fig)
-# save("Haissinski/pres_plots/z_hist_final.png", fig)
+# @descend longitudinal_evolve!(
+#     n_turns, particle_states, ϕs, α_c, mass, voltage,
+#     harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
+#     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
+#     use_excitation=true)
+# println("σ_E = ", σ_E, " E0 = ", E0)
+# scatter(particle_states.ϕ, particle_states.ΔE / σ_E, markersize=1, color=:black)
+fig = Figure(;size = (800, 500))
+ax = Axis(fig[1,1], xlabel=L"z / \sigma_z", ylabel="Count", title = "Distributions")
+hist!(ax, particle_states.ΔE / σ_E, bins=100, label="ΔE/σ_E")
+hist!(ax, particle_states.z / σ_z, bins=100, label="z/σ_z")
+axislegend(ax, position=:rt) 
+display(fig)
+save("pres_plots/distributions_final.png", fig)
 
 # fig = Figure(;size = (800, 500))
 # ax = Axis(fig[1,1], xlabel=L"Turn", ylabel=L"\sigma _E", title = L"\sigma _E Evolution", xscale = log10)
 # lines!(ax, collect(range(1, length(temp_vec))), temp_vec)
-# # xlims!(ax, 10000, n_turns)
+# # xlims!(ax, 50000, n_turns)
 # display(fig)
-# save("Haissinski/pres_plots/energy_std_evo_goes_just_right.png", fig)
+# save("pres_plots/energy_std_evo_goes_just_right.png", fig)
 
-resize!(particles_out.states, 500)[1]
+4 * freq_rf * 2π / (β * SPEED_LIGHT) + ϕs
+
+fig = Figure(size=(800, 500))
+ax = Axis(fig[1, 1], xlabel=L"\phi", ylabel=L"\frac{\Delta E}{\sigma_E}")
+Label(fig[1, 1, Top()], "At Convergence: Turn $(length(particle_states))", fontsize = 20)
+scatter!(ax, 
+    particle_states.ϕ ,
+    particle_states.ΔE / σ_E,
+    markersize = 1, color = :black)
+scatter!(ax, 
+    ϕs,
+    0,
+    markersize = 10, color = :yellow)
+# println(σ_E)
+# lines!(ax, boundary_obs[][1], boundary_obs[][2] / σ_E0, color=:red)
+# xlims!(ax, 0, 3π/2)
+# ylims!(ax, minimum(boundary_points[2]) / σ_E0-5, maximum(boundary_points[2]) / σ_E0+5)
+display(fig)
+# save("pres_plots/phase_plot_final_1e5.png", fig)
+
+
+
+
+
+
+
+
+
 
 ### To get scatter plot animation only, but faster than the other methods
 n_turns::Int64 = 100;
@@ -2481,18 +2712,19 @@ create_animation_from_pngs(scatter_plots, 100000, filename="scatter_fast_test.mp
 
 
 ### To get all plots, quickly
-n_turns::Int64 = 1;
+n_turns::Int64 = 3;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
-scatter_plots, potential_plots = longitudinal_evolve!(
+scatter_plots, potential_plots, σ_E, σ_z= longitudinal_evolve!(
     n_turns, particle_states, ϕs, α_c, mass, voltage,
-    harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
+    harmonic, radius, freq_rf, pipe_radius, E0, σ_E0,σ_z,
     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-    use_excitation=false, plot_scatter=true, plot_potential=true, plot_WF=false);
-scatter_plots[1]
-println(typeof(scatter_plots[1]))
+    use_excitation=true, plot_scatter=true, plot_potential=true, plot_WF=false);
+
 # save("Haissinski/pres_plots/phase_plot_ini_1e5.png", scatter_plots[1])
-scatter_plots[2]
-potential_plots[2]
+scatter_plots[3]
+potential_plots[50]
+
+# wf_plots[1000]
 # save("Haissinski/pres_plots/wake_potential_ini_1e5.png", potential_plots[1])
 # scatter(particle_states.ϕ, particle_states.ΔE , markersize=1, color=:black)
 # hist(particle_states.ΔE , bins=100)
@@ -2565,11 +2797,11 @@ benchmark_result = @benchmark longitudinal_evolve(
 filtered_result = benchmark_filter_outliers(benchmark_result)
 
 
-@ProfileSVG.profview longitudinal_evolve(
-    n_turns, particle_states, ϕs, α_c, mass, voltage,
-    harmonic, radius, freq_rf, pipe_radius, energy, σ_E,σ_z,
+@ProfileSVG.profview longitudinal_evolve!(
+    10000, particle_states, ϕs, α_c, mass, voltage,
+    harmonic, radius, freq_rf, pipe_radius, E0_ini, σ_E,σ_z,
     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-    use_excitation=true, plot_potential=false,plot_WF=false, write_to_file=false, output_file="test1.h5") 
+    use_excitation=true, plot_potential=false,plot_WF=false) 
 
 
 
