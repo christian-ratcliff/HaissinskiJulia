@@ -55,7 +55,8 @@ using ProfileSVG ;
 using Profile ;
 using DataStructures ;
 using FileIO ; 
-using Cthulhu ;
+using Cthulhu
+
 
 # Physical constants
 const SPEED_LIGHT::Float64 = 299792458.
@@ -588,8 +589,7 @@ function longitudinal_evolve(
     plot_WF::Bool=false,
     write_to_file::Bool=false,
     output_file::String="particles_output.hdf5",
-    additional_metadata::Dict{String, Any}=Dict{String, Any}()
-) where T<:Float64
+    additional_metadata::Dict{String, Any}=Dict{String, Any}()) where T<:Float64
 
     # Pre-compute constants
     γ0::Float64 = E0 / mass
@@ -980,8 +980,7 @@ function longitudinal_evolve!(
     display_counter::Bool=true,
     plot_scatter::Bool=false,
     plot_potential::Bool=false,
-    plot_WF::Bool=false
-)::Tuple where T<:Float64 
+    plot_WF::Bool=false)::Tuple where T<:Float64 
     
     # Pre-compute physical constants
     γ0::Float64 = E0 / mass
@@ -2649,11 +2648,11 @@ scatter(particle_states.ϕ, particle_states.ΔE / σ_E, markersize=1, color=:bla
 # scatter(particle_states.z / σ_z, particle_states.ΔE / σ_E, markersize=1, color=:black)
 
 
-# @descend longitudinal_evolve!(
-#     n_turns, particle_states, ϕs, α_c, mass, voltage,
-#     harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
-#     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
-#     use_excitation=true)
+@descend longitudinal_evolve!(
+    n_turns, particle_states, ϕs, α_c, mass, voltage,
+    harmonic, radius, freq_rf, pipe_radius, E0, σ_E,σ_z,
+    use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
+    use_excitation=true)
 # println("σ_E = ", σ_E, " E0 = ", E0)
 # scatter(particle_states.ϕ, particle_states.ΔE / σ_E, markersize=1, color=:black)
 fig = Figure(;size = (800, 500))
@@ -2662,7 +2661,7 @@ hist!(ax, particle_states.ΔE / σ_E, bins=100, label="ΔE/σ_E")
 hist!(ax, particle_states.z / σ_z, bins=100, label="z/σ_z")
 axislegend(ax, position=:rt) 
 display(fig)
-save("pres_plots/distributions_final.png", fig)
+# save("pres_plots/distributions_final.png", fig)
 
 # fig = Figure(;size = (800, 500))
 # ax = Axis(fig[1,1], xlabel=L"Turn", ylabel=L"\sigma _E", title = L"\sigma _E Evolution", xscale = log10)
@@ -2742,7 +2741,7 @@ display(fig)
 save("Haissinski/pres_plots/z_dist_1e6.png", fig)
 
 ############ BENCHMARKING ############
-n_turns::Int64 = 1000;
+n_turns::Int64 = 100;
 particle_states, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e5),E0_ini,mass,ϕs, freq_rf) ;
 @btime longitudinal_evolve(
     $n_turns, $particle_states, $ϕs, $α_c, $mass, $voltage,
@@ -2798,7 +2797,7 @@ filtered_result = benchmark_filter_outliers(benchmark_result)
 
 
 @ProfileSVG.profview longitudinal_evolve!(
-    10000, particle_states, ϕs, α_c, mass, voltage,
+    1000, particle_states, ϕs, α_c, mass, voltage,
     harmonic, radius, freq_rf, pipe_radius, E0_ini, σ_E,σ_z,
     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
     use_excitation=true, plot_potential=false,plot_WF=false) 
@@ -2811,3 +2810,5 @@ bin_edges1 = range(-7.5*σ_z, 7.5*σ_z, length=nbins1+1)
 @btime calculate_histogram(particle_states.z, bin_edges1) ;
 @btime calculate_kde(particle_states.z) ;
 @btime hist(particle_states.z, bin_edges1 ) ;
+
+Threads.nthreads()

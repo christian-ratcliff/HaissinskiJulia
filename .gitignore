@@ -5,3 +5,6 @@ haissinski.jl
 Manifest.jl
 graph_generation.jl
 interpolations_testing.jl
+StochasticADTesting
+StochasHaissinski.jl
+Rewrite2.jl
