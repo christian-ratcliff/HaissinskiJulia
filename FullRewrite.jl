@@ -96,7 +96,7 @@ println(typeof(particles))
 
 show(err)
 
-particles.derivative.ΔE
+@btime particles.derivative.ΔE .= 0
 
 using StochasticAD
 n_particles = length(particles)
