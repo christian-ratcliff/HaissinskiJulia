@@ -10,7 +10,6 @@ using StructArrays
 using StaticArrays
 using Statistics
 using Random
-Random.seed!(1234)
 using Distributions
 using ProgressMeter
 using LoopVectorization
@@ -71,7 +70,7 @@ end
         particles::StructArray{Particle{T}},
         params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
         buffers::SimulationBuffers{T}
-    ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF} -> Tuple{T, T, T}
+    ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF} -> Tuple{T, T, TE}
 
 Evolve particles through the accelerator for multiple turns.
 Type-stable implementation supporting StochasticTriple parameters.
@@ -101,12 +100,13 @@ function longitudinal_evolve!(
     SR_damping = params.SR_damping
     use_excitation = params.use_excitation
     
-    # Pre-compute physical constants
-    γ0 = E0 / mass
-    β0 = sqrt(1 - 1/γ0^2)
-    η0 = α_c - 1/(γ0^2)
+    # Pre-compute physical constants - handle StochasticTriple values
+    # Use StochasticAD.propagate for all calculations that might involve StochasticTriple
+    γ0 = StochasticAD.propagate((energy, m) -> energy / m, E0, mass)
+    β0 = StochasticAD.propagate(γ -> sqrt(1 - 1/γ^2), γ0)
+    η0 = StochasticAD.propagate((alpha, gamma) -> alpha - 1/(gamma^2), α_c, γ0)
     sin_ϕs = sin(ϕs)
-    rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+    rf_factor = StochasticAD.propagate((freq, beta) -> freq * 2π / (beta * SPEED_LIGHT), freq_rf, β0)
     
     # Get initial spreads
     n_particles::Int = length(particles)
@@ -120,9 +120,9 @@ function longitudinal_evolve!(
         Z0 = convert(T, 120π)
         cτ = convert(T, 4e-3)
         
-        # Convert StochasticTriple types to Float64 only where needed for specific calculations
-        wake_factor_val = Z0 * SPEED_LIGHT / (π * convert(T, pipe_radius))
-        wake_sqrt_val = sqrt(2 * kp / convert(T, pipe_radius))
+        # For wake calculations, safely convert values using propagate
+        wake_factor_val = StochasticAD.propagate(r -> Z0 * SPEED_LIGHT / (π * r), pipe_radius)
+        wake_sqrt_val = StochasticAD.propagate(r -> sqrt(2 * kp / r), pipe_radius)
     end
     
     # Setup progress meter
@@ -154,60 +154,70 @@ function longitudinal_evolve!(
         
         # Apply wakefield effects
         if use_wakefield
-            # For complex calculations with mixed types, convert to Float64 as needed
-            η0_val = convert(T, η0)
-            radius_val = convert(T, radius)
-            E0_val = convert(T, E0)
+            # Use propagate for all calculations that might involve StochasticTriple
+            curr = StochasticAD.propagate(
+                (eta, energy, rad) -> begin
+                    # Avoid explicit Float64 conversions
+                    particle_factor = (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles
+                    return particle_factor / energy / (2*π*rad) * σ_z / (eta * σ_E0^2)
+                end,
+                η0, E0, radius
+            )
             
-            curr = convert(T, (1e11/(10.0^floor(Int, log10(n_particles))))) * 
-                  convert(T, n_particles) / E0_val / (2*π*radius_val) * 
-                  σ_z / (η0_val * σ_E0^2)
-                  
             apply_wakefield_inplace!(particles, buffers, wake_factor_val, wake_sqrt_val, cτ, curr, σ_z, bin_edges)
             
             if update_E0
                 # Update reference energy based on collective effects
-                E0 += mean(particles.coordinates.ΔE .- ΔE_before)
+                mean_ΔE_diff = mean(particles.coordinates.ΔE .- ΔE_before)
+                E0 = StochasticAD.propagate((energy, diff) -> energy + diff, E0, mean_ΔE_diff)
                 
-                # Zero the mean energy deviation
+                # Zero the mean energy deviation - FIXED VERSION
                 mean_ΔE = mean(particles.coordinates.ΔE)
-                for i in 1:n_particles
-                    particles.coordinates.ΔE[i] -= mean_ΔE
-                end
+                # Use the safe update function instead of direct assignment
+                safe_update_energy!(particles, mean_ΔE)
             end
         end
         
         # Update reference energy if needed
         if update_E0
-            E0 += voltage * sin_ϕs
-            γ0 = E0/mass 
-            β0 = sqrt(1 - 1/γ0^2)
+            # Use propagate for all operations that involve potential StochasticTriples
+            E0 = StochasticAD.propagate((energy, v, s) -> energy + v * s, E0, voltage, sin_ϕs)
+            γ0 = StochasticAD.propagate((energy, m) -> energy/m, E0, mass)
+            β0 = StochasticAD.propagate(γ -> sqrt(1 - 1/γ^2), γ0)
             
             # Adjust for radiation losses
             if SR_damping
-                E0_val = convert(T, E0)
-                radius_val = convert(T, radius)
-                ∂U_∂E = convert(T, 4 * 8.85e-5) * (E0_val/1e9)^3 / radius_val
-                E0 -= ∂U_∂E * E0 / 4
-                γ0 = E0/mass 
-                β0 = sqrt(1 - 1/γ0^2)
+                E0 = StochasticAD.propagate(
+                    (energy, rad) -> begin
+                        # Calculate radiation coefficient without explicit type conversion
+                        radiation_coeff = 4 * 8.85e-5 * (energy/1e9)^3 / rad
+                        # Apply energy loss
+                        return energy - radiation_coeff * energy / 4
+                    end,
+                    E0, radius
+                )
+                γ0 = StochasticAD.propagate((energy, m) -> energy/m, E0, mass)
+                β0 = StochasticAD.propagate(γ -> sqrt(1 - 1/γ^2), γ0)
             end
         end
         
         # Update phase advance
         if update_η
             for i in 1:n_particles
-                # Calculate slip factor for each particle
+                # Calculate slip factor for each particle using propagate
                 Δγ_i = particles.coordinates.ΔE[i] / mass
-                η_i = α_c - 1/(γ0 + Δγ_i)^2
+                η_i = StochasticAD.propagate(
+                    (alpha, gamma, delta_gamma) -> alpha - 1/(gamma + delta_gamma)^2,
+                    α_c, γ0, Δγ_i
+                )
                 
                 # Use helper function for phase advance with proper StochasticTriple handling
                 particles.coordinates.z[i] = StochasticAD.propagate(
-                    (_η_i, _harmonic, _β0, _E0, _rf_factor, _ϕs) -> begin
-                        coeff_i = 2π * _harmonic * _η_i / (_β0 * _β0 * _E0)
-                        ϕ_i = z_to_ϕ(particles.coordinates.z[i], _rf_factor, _ϕs)
+                    (eta_i, h, beta, energy, rf, phi_s) -> begin
+                        coeff_i = 2π * h * eta_i / (beta * beta * energy)
+                        ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf, phi_s)
                         ϕ_i += coeff_i * particles.coordinates.ΔE[i]
-                        return ϕ_to_z(ϕ_i, _rf_factor, _ϕs)
+                        return ϕ_to_z(ϕ_i, rf, phi_s)
                     end,
                     η_i, harmonic, β0, E0, rf_factor, ϕs
                 )
@@ -218,8 +228,11 @@ function longitudinal_evolve!(
         end
         
         # Update RF factor with new beta
-        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
-        
+        rf_factor = StochasticAD.propagate(
+            (freq, beta) -> freq * 2π / (beta * SPEED_LIGHT),
+            freq_rf, β0
+        )
+        println(std(particles.coordinates.ΔE))
         # Update progress
         next!(p)
     end
@@ -228,12 +241,9 @@ function longitudinal_evolve!(
     σ_E = std(particles.coordinates.ΔE)
     σ_z = std(particles.coordinates.z)
     
-    # Convert final E0 to Float64 for return
-    E0_final = convert(T, E0)
-    
-    return σ_E, σ_z, E0_final
+    # Return the actual E0 type without conversion
+    return σ_E, σ_z, E0
 end
-
 
 """
     apply_phase_advance!(
@@ -271,10 +281,6 @@ function apply_phase_advance!(
         
         coeff = StochasticAD.propagate(coeff_fn, η0, harmonic, β0, E0)
         
-        # Extract raw arrays for faster processing
-        # z_values = particles.coordinates.z
-        # ΔE_values = particles.coordinates.ΔE
-        
         # Helper for phase space conversion
         phase_fn = (_rf_factor, _ϕs, z_i, coeff_val, ΔE_i) -> begin
             ϕ_i = z_to_ϕ(z_i, _rf_factor, _ϕs)
@@ -284,7 +290,8 @@ function apply_phase_advance!(
         
         # Process all particles
         for i in 1:length(particles)
-            z_values[i] = StochasticAD.propagate(
+            # Fix: Use particles.coordinates.z directly instead of z_values
+            particles.coordinates.z[i] = StochasticAD.propagate(
                 (_rf, _ϕs) -> phase_fn(_rf, _ϕs, particles.coordinates.z[i], coeff, particles.coordinates.ΔE[i]),
                 rf_factor, ϕs
             )
@@ -300,4 +307,24 @@ function apply_phase_advance!(
             particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
         end
     end
+end
+
+function safe_update_energy!(particles::StructArray{Particle{T}}, mean_value) where T<:Float64
+    # If mean_value is a StochasticTriple, we need special handling
+    if typeof(mean_value) <: StochasticTriple
+        for i in 1:length(particles)
+            # Use propagate to handle the subtraction properly
+            particles.coordinates.ΔE[i] = StochasticAD.propagate(
+                (e, m) -> e - m,
+                particles.coordinates.ΔE[i],
+                mean_value
+            )
+        end
+    else
+        # If it's a regular Float64, just do the subtraction directly
+        for i in 1:length(particles)
+            particles.coordinates.ΔE[i] -= mean_value
+        end
+    end
+    return nothing
 end

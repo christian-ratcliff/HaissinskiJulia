@@ -46,7 +46,6 @@ begin
     σ_E0 = 1e6
     σ_z0 = sqrt(2 * π) * SPEED_LIGHT / ω_rev * sqrt(α_c*E0_ini/harmonic/voltage/abs(cos(ϕs))) * σ_E0 / E0_ini
 end;
-
 # Create simulation parameters
 sim_params = SimulationParameters(
     E0_ini,      # E0
@@ -58,7 +57,7 @@ sim_params = SimulationParameters(
     α_c,         # α_c
     ϕs,          # ϕs
     freq_rf,     # freq_rf
-    10000,       # n_turns
+    100,       # n_turns
     true,        # use_wakefield
     true,        # update_η
     true,        # update_E0

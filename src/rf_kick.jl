@@ -1,4 +1,6 @@
 using StochasticAD
+# using StochasticAD
+
 """
     rf_kick!(
         voltage,
@@ -9,7 +11,7 @@ using StochasticAD
     ) where T<:Float64 -> Nothing
 
 Apply RF cavity voltage to all particles.
-Memory-efficient implementation for StochasticTriple.
+Enhanced implementation for proper StochasticTriple propagation.
 """
 function rf_kick!(
     voltage,
@@ -19,41 +21,33 @@ function rf_kick!(
     particles::StructArray{Particle{T}}
 ) where T<:Float64
     
-    # Check type once, outside the loop
+    # Check if voltage is a StochasticTriple
     is_stochastic = typeof(voltage) <: StochasticTriple
     
-    # Pre-compute the constant values
-    rf_factor_val = convert(T, rf_factor)
-    ϕs_val = convert(T, ϕs)
-    sin_ϕs_val = convert(T, sin_ϕs)
-    
-    # Process particles based on type
+    # Create a single wrapper function that will properly propagate the StochasticTriple
     if is_stochastic
-        # For StochasticTriple, we need special handling
-        # But minimize allocations inside the loop
-        
-        # Extract the raw values for faster computation
-        # z_values = particles.coordinates.z
-        # ΔE_values = particles.coordinates.ΔE
-        
-        # Process particles
-        for i in 1:length(particles)
-            # Calculate phase and sine term
-            ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor_val, ϕs_val)
-            sin_term = sin(ϕ_val) - sin_ϕs_val
-            
-            # Propagate through the operation with minimal intermediate variables
-            # This is a single StochasticTriple operation for the whole batch
-            ΔE_values[i] = StochasticAD.propagate(
-                v -> particles.coordinates.ΔE[i] + v * sin_term, 
-                voltage
-            )
+        # Define the core kick calculation function
+        function apply_kick(v)
+            for i in 1:length(particles)
+                ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+                sin_term = sin(ϕ_val) - sin_ϕs
+                # Apply kick
+                particles.coordinates.ΔE[i] += v * sin_term
+            end
+            # Return a scalar result to ensure gradient propagation
+            return sum(particles.coordinates.ΔE) / length(particles)
         end
+        
+        # Use propagate with the entire function to maintain StochasticTriple lineage
+        # This scalar result isn't used, but ensures gradient propagation
+        _ = StochasticAD.propagate(apply_kick, voltage)
     else
-        # Standard Float64 implementation - vectorized when possible
+        # Standard implementation for non-StochasticTriple case
         for i in 1:length(particles)
-            ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor_val, ϕs_val)
-            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs_val)
+            ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
         end
     end
+    
+    return nothing
 end

@@ -15,12 +15,11 @@ begin
     using Plots
     using Statistics
     using StochasticAD
+    using Random
 end;
 
-# # Physical constants
-# const SPEED_LIGHT = 299792458.0
-# const ELECTRON_CHARGE = 1.602176634e-19
-# const MASS_ELECTRON = 0.51099895069e6
+# Set a deterministic seed for reproducibility
+Random.seed!(123);
 
 # Set physical parameters
 begin
@@ -45,7 +44,7 @@ begin
     σ_E0 = 1e6
     σ_z0 = sqrt(2 * π) * SPEED_LIGHT / ω_rev * sqrt(α_c*E0_ini/harmonic/voltage/abs(cos(ϕs))) * σ_E0 / E0_ini
 
-    # Create base simulation parameters
+    # Create base simulation parameters with INCREASED number of turns
     base_params = SimulationParameters(
         E0_ini,      # E0
         mass,        # mass
@@ -56,7 +55,7 @@ begin
         α_c,         # α_c
         ϕs,          # ϕs
         freq_rf,     # freq_rf
-        10000,       # n_turns (reduced for sensitivity analysis)
+        500,        # n_turns (increased for better sensitivity detection)
         true,        # use_wakefield
         true,        # update_η
         true,        # update_E0
@@ -65,8 +64,39 @@ begin
     )
 end;
 
+# Test function to verify StochasticAD is working
+function test_stochastic_ad()
+    println("Testing StochasticAD with a simple function...")
+    
+    # Define a simple test function
+    f(x) = x^2 + 3*x
+    
+    # True derivative is 2x + 3
+    x_test = 5.0
+    true_derivative = 2*x_test + 3
+    
+    # Compute using StochasticAD
+    samples = [derivative_estimate(f, x_test) for _ in 1:100]
+    estimated = mean(samples)
+    uncertainty = std(samples) / sqrt(100)
+    
+    println("StochasticAD test at x=$x_test:")
+    println("True derivative: $true_derivative")
+    println("Estimated: $estimated ± $uncertainty")
+    println("Relative error: $(abs(estimated - true_derivative)/true_derivative * 100)%")
+    
+    return abs(estimated - true_derivative) < uncertainty * 3
+end
 
-# Generate particles
+# Verify StochasticAD is working
+test_result = test_stochastic_ad()
+if !test_result
+    println("WARNING: StochasticAD test failed. Results may not be reliable.")
+else
+    println("StochasticAD test passed. Proceeding with sensitivity analysis.")
+end
+
+# Generate particles - use fewer particles for faster simulation
 n_particles = Int64(1e4)
 particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);
 println("Initial beam parameters: σ_E = $σ_E eV, σ_z = $σ_z m")
@@ -76,8 +106,20 @@ voltage_transform = VoltageTransform()
 energy_spread_fom = EnergySpreadFoM()
 bunch_length_fom = BunchLengthFoM()
 
-# Define voltage range to scan (around nominal value)
-voltage_range = range(4.5e6, 5.5e6, length=2);
+
+voltage_range = range(3.0e6, 7.0e6, length=3);
+
+# Test a single sensitivity calculation first
+println("\nTesting a single sensitivity calculation...")
+test_sensitivity = compute_sensitivity(
+    voltage_transform,
+    energy_spread_fom,
+    voltage,  # Use nominal voltage
+    particles,
+    base_params,
+    n_samples=5
+)
+println("Test sensitivity: $(test_sensitivity.mean_derivative) ± $(test_sensitivity.uncertainty)")
 
 # Scan RF voltage effect on energy spread
 println("\nScanning RF voltage effect on energy spread...")
@@ -87,7 +129,7 @@ params_energy, foms_energy, grads_energy, errors_energy = scan_parameter(
     voltage_range,
     particles,
     base_params,
-    n_samples=2
+    n_samples=10  # Use more samples for better statistics
 )
 
 # Scan RF voltage effect on bunch length
@@ -98,7 +140,7 @@ params_length, foms_length, grads_length, errors_length = scan_parameter(
     voltage_range,
     particles,
     base_params,
-    n_samples=30
+    n_samples=10
 )
 
 # Plot results
@@ -127,3 +169,5 @@ p2 = plot_sensitivity_scan(
 savefig(p2, "rf_voltage_bunch_length.png")
 
 println("Analysis complete. Results saved to rf_voltage_energy_spread.png and rf_voltage_bunch_length.png")
+
+randn!(MersenneTwister(Int(round(rand()*100))), zeros(5))

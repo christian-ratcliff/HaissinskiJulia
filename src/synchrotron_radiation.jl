@@ -19,10 +19,7 @@ function synchrotron_radiation!(
     is_stochastic = (typeof(E0) <: StochasticTriple) || (typeof(radius) <: StochasticTriple)
     
     if is_stochastic
-        # Extract raw arrays for faster access
-        ΔE_values = particles.coordinates.ΔE
-        
-        # Calculate damping once and apply to all particles
+        # Calculate damping and apply to all particles
         damping_fn = (e0, r) -> begin
             ∂U_∂E = 4 * 8.85e-5 * (e0/1e9)^3 / r
             return 1 - ∂U_∂E
@@ -32,13 +29,13 @@ function synchrotron_radiation!(
         damping_factor = StochasticAD.propagate(damping_fn, E0, radius)
         
         # Apply to all particles (vectorized)
-        ΔE_values .*= damping_factor
+        particles.coordinates.ΔE .*= damping_factor
     else
-        # Standard implementation - vectorized
+        # Standard implementation 
         ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / radius
         damping_factor = 1 - ∂U_∂E
         
-        # Apply damping (vectorized)
+        # Apply damping
         particles.coordinates.ΔE .*= damping_factor
     end
     

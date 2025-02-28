@@ -56,8 +56,8 @@ export quantum_excitation!, synchrotron_radiation!, apply_wakefield_inplace!, rf
 export z_to_ϕ, ϕ_to_z, calc_rf_factor, create_simulation_buffers,copyto_particles!
 
 # Export parameter sensitivity
-export VoltageTransform, AlphaCompactionTransform, HarmonicNumberTransform, PipeRadiusTransform
-export EnergySpreadFoM, BunchLengthFoM, EmittanceFoM
+export VoltageTransform, AlphaCompactionTransform, HarmonicNumberTransform, PipeRadiusTransform, ParameterTransformation, apply_transform, compute_fom, ParameterSensitivity
+export EnergySpreadFoM, BunchLengthFoM, EmittanceFoM, FigureOfMerit
 export compute_sensitivity, scan_parameter, plot_sensitivity_scan
 
 end # module
