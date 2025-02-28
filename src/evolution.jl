@@ -66,47 +66,47 @@ function generate_particles(
 end
 
 
-
 """
     longitudinal_evolve!(
         particles::StructArray{Particle{T}},
-        params::SimulationParameters{T},
+        params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
         buffers::SimulationBuffers{T}
-    ) where T<:Float64 -> Tuple{T, T, T}
+    ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF} -> Tuple{T, T, T}
 
 Evolve particles through the accelerator for multiple turns.
+Type-stable implementation supporting StochasticTriple parameters.
 
 Returns: (σ_E, σ_z, E0) - Final energy spread, bunch length, and reference energy
 """
 function longitudinal_evolve!(
     particles::StructArray{Particle{T}},
-    params::SimulationParameters{T},
+    params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
     buffers::SimulationBuffers{T}
-) where T<:Float64
+) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF}
     
     # Extract parameters
-    E0::T = params.E0
-    mass::T = params.mass
-    voltage::T = params.voltage
-    harmonic::Int = params.harmonic
-    radius::T = params.radius
-    freq_rf::T = params.freq_rf
-    pipe_radius::T = params.pipe_radius
-    α_c::T = params.α_c
-    ϕs::T = params.ϕs
-    n_turns::Int = params.n_turns
-    use_wakefield::Bool = params.use_wakefield
-    update_η::Bool = params.update_η
-    update_E0::Bool = params.update_E0
-    SR_damping::Bool = params.SR_damping
-    use_excitation::Bool = params.use_excitation
+    E0 = params.E0
+    mass = params.mass
+    voltage = params.voltage
+    harmonic = params.harmonic
+    radius = params.radius
+    freq_rf = params.freq_rf
+    pipe_radius = params.pipe_radius
+    α_c = params.α_c
+    ϕs = params.ϕs
+    n_turns = params.n_turns
+    use_wakefield = params.use_wakefield
+    update_η = params.update_η
+    update_E0 = params.update_E0
+    SR_damping = params.SR_damping
+    use_excitation = params.use_excitation
     
     # Pre-compute physical constants
-    γ0::T = E0 / mass
-    β0::T = sqrt(1 - 1/γ0^2)
-    η0::T = α_c - 1/(γ0^2)
-    sin_ϕs::T = sin(ϕs)
-    rf_factor::T = freq_rf * 2π / (β0 * SPEED_LIGHT)
+    γ0 = E0 / mass
+    β0 = sqrt(1 - 1/γ0^2)
+    η0 = α_c - 1/(γ0^2)
+    sin_ϕs = sin(ϕs)
+    rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
     
     # Get initial spreads
     n_particles::Int = length(particles)
@@ -116,23 +116,17 @@ function longitudinal_evolve!(
     if use_wakefield
         nbins::Int = next_power_of_two(Int(10^(ceil(Int, log10(n_particles)-2))))
         bin_edges = range(-7.5*σ_z0, 7.5*σ_z0, length=nbins+1)
-        kp::T = 3e1
-        Z0::T = 120π
-        cτ::T = 4e-3
-        wake_factor::T = Z0 * SPEED_LIGHT / (π * pipe_radius^2)
-        wake_sqrt::T = sqrt(2*kp/pipe_radius)
+        kp = convert(T, 3e1)
+        Z0 = convert(T, 120π)
+        cτ = convert(T, 4e-3)
+        
+        # Convert StochasticTriple types to Float64 only where needed for specific calculations
+        wake_factor_val = Z0 * SPEED_LIGHT / (π * convert(T, pipe_radius))
+        wake_sqrt_val = sqrt(2 * kp / convert(T, pipe_radius))
     end
     
     # Setup progress meter
     p = Progress(n_turns, desc="Simulating Turns: ")
-    
-    # # For tracking convergence
-    # σ_E_buffer = CircularBuffer{T}(50)
-    # E0_buffer = CircularBuffer{T}(50)
-    # σ_z_buffer = CircularBuffer{T}(50)
-    # push!(σ_E_buffer, σ_E0)
-    # push!(E0_buffer, E0)
-    # push!(σ_z_buffer, σ_z0)
     
     # Main evolution loop
     for turn in 1:n_turns
@@ -160,12 +154,19 @@ function longitudinal_evolve!(
         
         # Apply wakefield effects
         if use_wakefield
-            curr::T = (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/radius * σ_z / (η0*σ_E0^2)
-            apply_wakefield_inplace!(particles, buffers, wake_factor, wake_sqrt, cτ, curr, σ_z, bin_edges)
+            # For complex calculations with mixed types, convert to Float64 as needed
+            η0_val = convert(T, η0)
+            radius_val = convert(T, radius)
+            E0_val = convert(T, E0)
+            
+            curr = convert(T, (1e11/(10.0^floor(Int, log10(n_particles))))) * 
+                  convert(T, n_particles) / E0_val / (2*π*radius_val) * 
+                  σ_z / (η0_val * σ_E0^2)
+                  
+            apply_wakefield_inplace!(particles, buffers, wake_factor_val, wake_sqrt_val, cτ, curr, σ_z, bin_edges)
             
             if update_E0
                 # Update reference energy based on collective effects
-
                 E0 += mean(particles.coordinates.ΔE .- ΔE_before)
                 
                 # Zero the mean energy deviation
@@ -184,7 +185,9 @@ function longitudinal_evolve!(
             
             # Adjust for radiation losses
             if SR_damping
-                ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / radius
+                E0_val = convert(T, E0)
+                radius_val = convert(T, radius)
+                ∂U_∂E = convert(T, 4 * 8.85e-5) * (E0_val/1e9)^3 / radius_val
                 E0 -= ∂U_∂E * E0 / 4
                 γ0 = E0/mass 
                 β0 = sqrt(1 - 1/γ0^2)
@@ -197,59 +200,104 @@ function longitudinal_evolve!(
                 # Calculate slip factor for each particle
                 Δγ_i = particles.coordinates.ΔE[i] / mass
                 η_i = α_c - 1/(γ0 + Δγ_i)^2
-                coeff_i = 2π * harmonic * η_i / (β0 * β0 * E0)
                 
-                # Get current phase
-                ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-                
-                # Update phase
-                ϕ_i += coeff_i * particles.coordinates.ΔE[i]
-                
-                # Update longitudinal position
-                particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
+                # Use helper function for phase advance with proper StochasticTriple handling
+                particles.coordinates.z[i] = StochasticAD.propagate(
+                    (_η_i, _harmonic, _β0, _E0, _rf_factor, _ϕs) -> begin
+                        coeff_i = 2π * _harmonic * _η_i / (_β0 * _β0 * _E0)
+                        ϕ_i = z_to_ϕ(particles.coordinates.z[i], _rf_factor, _ϕs)
+                        ϕ_i += coeff_i * particles.coordinates.ΔE[i]
+                        return ϕ_to_z(ϕ_i, _rf_factor, _ϕs)
+                    end,
+                    η_i, harmonic, β0, E0, rf_factor, ϕs
+                )
             end
         else
-            # Using constant slip factor
-            coeff = 2π * harmonic * η0 / (β0 * β0 * E0)
-            
-            for i in 1:n_particles
-                # Get current phase
-                ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-                
-                # Update phase
-                ϕ_i += coeff * particles.coordinates.ΔE[i]
-                
-                # Update longitudinal position
-                particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
-            end
+            # Using constant slip factor - use the helper function
+            apply_phase_advance!(particles, η0, harmonic, β0, E0, rf_factor, ϕs)
         end
         
         # Update RF factor with new beta
         rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
         
-        # Update tracking buffers
-        # push!(σ_E_buffer, σ_E)
-        # push!(E0_buffer, E0)
-        # push!(σ_z_buffer, σ_z)
-        
-        # Check for convergence
-        # if abs(mean(σ_E_buffer)/mean(E0_buffer) - σ_E/E0) < 1e-9
-        #     @info "Converged at turn $turn with σ_E = $(mean(σ_E_buffer))"
-        #     σ_E = mean(σ_E_buffer)
-        #     σ_z = mean(σ_z_buffer)
-        #     E0 = mean(E0_buffer)
-        #     return σ_E, σ_z, E0
-        # end
-        
         # Update progress
         next!(p)
     end
     
-    # Final spreads if not converged
-    # particles.coordinates.z = [p.coordinates.z for p in particles]
-    # particles.coordinates.ΔE = [p.coordinates.ΔE for p in particles]
+    # Final spreads
     σ_E = std(particles.coordinates.ΔE)
     σ_z = std(particles.coordinates.z)
     
-    return σ_E, σ_z, E0
+    # Convert final E0 to Float64 for return
+    E0_final = convert(T, E0)
+    
+    return σ_E, σ_z, E0_final
+end
+
+
+"""
+    apply_phase_advance!(
+        particles::StructArray{Particle{T}},
+        η0,
+        harmonic,
+        β0,
+        E0,
+        rf_factor,
+        ϕs
+    ) where T<:Float64 -> Nothing
+
+Apply phase advancement to all particles.
+Memory-efficient implementation for StochasticTriple.
+"""
+function apply_phase_advance!(
+    particles::StructArray{Particle{T}},
+    η0,
+    harmonic,
+    β0,
+    E0,
+    rf_factor,
+    ϕs
+) where T<:Float64
+    
+    # Check type once, outside the loop
+    is_stochastic = any(typeof(param) <: StochasticTriple for param in 
+                        [η0, harmonic, β0, E0, rf_factor, ϕs])
+    
+    if is_stochastic
+        # Calculate coefficient once - single propagate call
+        coeff_fn = (_η0, _harmonic, _β0, _E0) -> begin
+            return 2π * _harmonic * _η0 / (_β0 * _β0 * _E0)
+        end
+        
+        coeff = StochasticAD.propagate(coeff_fn, η0, harmonic, β0, E0)
+        
+        # Extract raw arrays for faster processing
+        # z_values = particles.coordinates.z
+        # ΔE_values = particles.coordinates.ΔE
+        
+        # Helper for phase space conversion
+        phase_fn = (_rf_factor, _ϕs, z_i, coeff_val, ΔE_i) -> begin
+            ϕ_i = z_to_ϕ(z_i, _rf_factor, _ϕs)
+            ϕ_i += coeff_val * ΔE_i
+            return ϕ_to_z(ϕ_i, _rf_factor, _ϕs)
+        end
+        
+        # Process all particles
+        for i in 1:length(particles)
+            z_values[i] = StochasticAD.propagate(
+                (_rf, _ϕs) -> phase_fn(_rf, _ϕs, particles.coordinates.z[i], coeff, particles.coordinates.ΔE[i]),
+                rf_factor, ϕs
+            )
+        end
+    else
+        # Standard implementation - vectorized calculation
+        coeff = 2π * harmonic * η0 / (β0 * β0 * E0)
+        
+        # Process all particles
+        for i in 1:length(particles)
+            ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+            ϕ_i += coeff * particles.coordinates.ΔE[i]
+            particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
+        end
+    end
 end

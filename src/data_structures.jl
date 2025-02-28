@@ -52,20 +52,31 @@ struct BeamTurn{T<:Float64}
 end
 
 """
-    SimulationParameters{T<:Float64}
+    SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF}
 
-Container for all simulation parameters.
+Type-stable container for all simulation parameters with multiple type parameters
+to allow individual parameters to be StochasticTriple when needed.
+
+# Type Parameters
+- `TE`: Type of E0 (energy)
+- `TM`: Type of mass
+- `TV`: Type of voltage
+- `TR`: Type of radius
+- `TPR`: Type of pipe_radius
+- `TA`: Type of α_c (momentum compaction)
+- `TPS`: Type of ϕs (synchronous phase)
+- `TF`: Type of freq_rf (RF frequency)
 
 # Fields
-- `E0::T`: Reference energy [eV]
-- `mass::T`: Particle mass [eV/c²]
-- `voltage::T`: RF voltage [V]
+- `E0::TE`: Reference energy [eV]
+- `mass::TM`: Particle mass [eV/c²]
+- `voltage::TV`: RF voltage [V]
 - `harmonic::Int`: RF harmonic number
-- `radius::T`: Accelerator radius [m]
-- `pipe_radius::T`: Beam pipe radius [m]
-- `α_c::T`: Momentum compaction factor
-- `ϕs::T`: Synchronous phase [rad]
-- `freq_rf::T`: RF frequency [Hz]
+- `radius::TR`: Accelerator radius [m]
+- `pipe_radius::TPR`: Beam pipe radius [m]
+- `α_c::TA`: Momentum compaction factor
+- `ϕs::TPS`: Synchronous phase [rad]
+- `freq_rf::TF`: RF frequency [Hz]
 - `n_turns::Int`: Number of turns to simulate
 - `use_wakefield::Bool`: Enable wakefield effects
 - `update_η::Bool`: Update slip factor
@@ -73,22 +84,35 @@ Container for all simulation parameters.
 - `SR_damping::Bool`: Enable synchrotron radiation damping
 - `use_excitation::Bool`: Enable quantum excitation
 """
-mutable struct SimulationParameters{T} <: FieldVector{15, Coordinate}
-    E0::T
-    mass::T
-    voltage::T
+struct SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF}
+    E0::TE
+    mass::TM
+    voltage::TV
     harmonic::Int
-    radius::T
-    pipe_radius::T
-    α_c::T
-    ϕs::T
-    freq_rf::T
+    radius::TR
+    pipe_radius::TPR
+    α_c::TA
+    ϕs::TPS
+    freq_rf::TF
     n_turns::Int
     use_wakefield::Bool
     update_η::Bool
     update_E0::Bool
     SR_damping::Bool
     use_excitation::Bool
+end
+
+# Convenience constructor for all Float64 parameters
+function SimulationParameters(E0::Float64, mass::Float64, voltage::Float64, 
+                             harmonic::Int, radius::Float64, pipe_radius::Float64, 
+                             α_c::Float64, ϕs::Float64, freq_rf::Float64, 
+                             n_turns::Int, use_wakefield::Bool, update_η::Bool, 
+                             update_E0::Bool, SR_damping::Bool, use_excitation::Bool)
+    return SimulationParameters{Float64,Float64,Float64,Float64,Float64,Float64,Float64,Float64}(
+        E0, mass, voltage, harmonic, radius, pipe_radius, 
+        α_c, ϕs, freq_rf, n_turns, use_wakefield, 
+        update_η, update_E0, SR_damping, use_excitation
+    )
 end
 
 """

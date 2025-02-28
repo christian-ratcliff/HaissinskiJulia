@@ -162,20 +162,22 @@ function calculate_histogram(data::Vector{T}, bins_edges) where T<:Float64
 end
 
 """
-    z_to_ϕ(z_val::T, rf_factor::T, ϕs::T) where T<:Float64 -> T
+    z_to_ϕ(z_val, rf_factor, ϕs) -> Any
 
 Convert longitudinal position to RF phase.
+Compatible with StochasticTriple.
 """
-function z_to_ϕ(z_val::T, rf_factor::T, ϕs::T) where T<:Float64
+function z_to_ϕ(z_val, rf_factor, ϕs)
     return -(z_val * rf_factor - ϕs)
 end
 
 """
-    ϕ_to_z(ϕ_val::T, rf_factor::T, ϕs::T) where T<:Float64 -> T
+    ϕ_to_z(ϕ_val, rf_factor, ϕs) -> Any
 
 Convert RF phase to longitudinal position.
+Compatible with StochasticTriple.
 """
-function ϕ_to_z(ϕ_val::T, rf_factor::T, ϕs::T) where T<:Float64
+function ϕ_to_z(ϕ_val, rf_factor, ϕs)
     return (-ϕ_val + ϕs) / rf_factor
 end
 
@@ -186,4 +188,20 @@ Calculate RF factor from RF frequency and relativistic beta.
 """
 function calc_rf_factor(freq_rf::T, β::T) where T<:Float64
     return freq_rf * 2π / (β * 299792458.0)  
+end
+
+"""
+    copyto_particles!(dst::StructArray{Particle{T}}, src::StructArray{Particle{T}}) where T<:Float64
+
+Efficiently copy particle data without allocations.
+"""
+function copyto_particles!(dst::StructArray{Particle{T}}, src::StructArray{Particle{T}}) where T<:Float64
+    @assert length(dst) == length(src)
+    copyto!(dst.coordinates.z, src.coordinates.z)
+    copyto!(dst.coordinates.ΔE, src.coordinates.ΔE)
+    if hasproperty(dst, :uncertainty) && hasproperty(src, :uncertainty)
+        copyto!(dst.uncertainty.z, src.uncertainty.z)
+        copyto!(dst.uncertainty.ΔE, src.uncertainty.ΔE)
+    end
+    return dst
 end

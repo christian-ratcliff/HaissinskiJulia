@@ -63,6 +63,7 @@ end;
 @btime longitudinal_evolve!(particles, sim_params, buffers)
 # 191.733 ms (5733 allocations: 189.86 MiB)  1e5 particles, 1e2 turns, less allcoaations, slightly longer, much more memory
 
+#current: 209.533 ms (6990 allocations: 189.88 MiB)  1e5 particles, 1e2 turns
 @benchmark longitudinal_evolve!(particles, sim_params, buffers)
 # BenchmarkTools.Trial: 26 samples with 1 evaluation.
 #  Range (min … max):  187.889 ms … 203.816 ms  ┊ GC (min … max): 2.80% … 3.04%

@@ -77,7 +77,7 @@ energy_spread_fom = EnergySpreadFoM()
 bunch_length_fom = BunchLengthFoM()
 
 # Define voltage range to scan (around nominal value)
-voltage_range = range(4.5e6, 5.5e6, length=6);
+voltage_range = range(4.5e6, 5.5e6, length=2);
 
 # Scan RF voltage effect on energy spread
 println("\nScanning RF voltage effect on energy spread...")
@@ -87,7 +87,7 @@ params_energy, foms_energy, grads_energy, errors_energy = scan_parameter(
     voltage_range,
     particles,
     base_params,
-    n_samples=30
+    n_samples=2
 )
 
 # Scan RF voltage effect on bunch length
