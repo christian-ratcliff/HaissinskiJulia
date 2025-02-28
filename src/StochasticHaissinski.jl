@@ -1,27 +1,63 @@
+"""
+StochasticHaissinski.jl - Main module for stochastic Haissinski simulations
+
+This module implements a high-performance beam evolution simulation for particle accelerators
+with StochasticAD integration for parameter sensitivity analysis.
+"""
 module StochasticHaissinski
+
+# Standard library imports
+using Statistics
+using LinearAlgebra
+using Random
+
+# External dependencies
+using StochasticAD
+using Distributions
+using StructArrays
 using LoopVectorization
+using FFTW
+using Interpolations
+using ProgressMeter
+using FHist
+using Plots
+using LaTeXStrings
 
-begin
-    # Physical constants
-    const SPEED_LIGHT::Float64 = 299792458.
-    const ELECTRON_CHARGE::Float64 = 1.602176634e-19
-    const MASS_ELECTRON::Float64 = 0.51099895069e6
-    const INV_SQRT_2π::Float64 = 1 / sqrt(2 * π)
-    const ħ::Float64 = 6.582119569e-16
-end;
-
-export SPEED_LIGHT, ELECTRON_CHARGE, MASS_ELECTRON, INV_SQRT_2π, ħ
-
+# Include submodules
+include("constants.jl")
 include("data_structures.jl")
-export Coordinate, Particle, BeamTurn, SimulationBuffers
-
 include("utils.jl")
-export threaded_fieldwise_copy!, assign_to_turn!, delta, FastConv1D, FastLinearConvolution, is_power_of_two, next_power_of_two, create_simulation_buffers, pad_and_ensure_power_of_two!, fast_reset_buffers!, reset_specific_buffers!, calculate_histogram,z_to_ϕ, calc_rf_factor, ϕ_to_z
-
+include("rf_kick.jl")
+include("synchrotron_radiation.jl")
 include("evolution.jl")
-export generate_particles, BeamTurn, longitudinal_evolve!
+include("quantum_excitation.jl")
+include("wakefield.jl")
+include("visualization.jl")
 
+# Include parameter sensitivity framework
+include("parameter_sensitivity/types.jl")
+include("parameter_sensitivity/transformations.jl")
+include("parameter_sensitivity/figures_of_merit.jl")
+include("parameter_sensitivity/sensitivity.jl")
+include("parameter_sensitivity/scan.jl")
+include("parameter_sensitivity/visualization.jl")
 
+# Export constants
+export SPEED_LIGHT, ELECTRON_CHARGE, MASS_ELECTRON
 
+# Export data structures
+export Coordinate, Particle, BeamTurn, SimulationParameters, SimulationBuffers
 
-end
+# Export core functions
+export generate_particles, longitudinal_evolve!
+export quantum_excitation!, synchrotron_radiation!, apply_wakefield_inplace!, rf_kick!, synchrotron_radiation!
+
+# Export utilities
+export z_to_ϕ, ϕ_to_z, calc_rf_factor, create_simulation_buffers
+
+# Export parameter sensitivity
+export VoltageTransform, AlphaCompactionTransform, HarmonicNumberTransform, PipeRadiusTransform
+export EnergySpreadFoM, BunchLengthFoM, EmittanceFoM
+export compute_sensitivity, scan_parameter, plot_sensitivity_scan
+
+end # module

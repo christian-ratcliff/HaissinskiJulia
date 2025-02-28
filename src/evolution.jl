@@ -1,27 +1,28 @@
-begin
-    using Distributions
-    using Random
-    Random.seed!(12345)
-    using LaTeXStrings
-    using Plots
-    using StatsPlots
-    using StochasticAD
-    using LoopVectorization
-    using ProgressMeter
-    using FHist
-    using FFTW
-    using Interpolations
-end
+"""
+evolution.jl - Particle evolution and beam dynamics
 
+This file implements the core longitudinal evolution algorithm and particle generation.
+It handles the multi-turn tracking of particles through the accelerator,
+including RF cavity effects, synchrotron radiation, and collective effects.
+"""
 
+using StructArrays
+using StaticArrays
+using Statistics
+using Random
+Random.seed!(1234)
+using Distributions
+using ProgressMeter
+using LoopVectorization
 
+"""
+    generate_particles(
+        μ_z::T, μ_E::T, σ_z::T, σ_E::T, num_particles::Int,
+        energy::T, mass::T, ϕs::T, freq_rf::T
+    ) where T<:Float64 -> Tuple{StructArray{Particle{T}}, T, T, T}
 
-begin
-    include("data_structures.jl")
-    include("utils.jl")
-end
-
-
+Generate initial particle distribution.
+"""
 function generate_particles(
     μ_z::T, μ_E::T, σ_z::T, σ_E::T, num_particles::Int,
     energy::T, mass::T, ϕs::T, freq_rf::T) where T<:Float64
@@ -52,295 +53,203 @@ function generate_particles(
 
     # Create the StructArray of Particles
 
-    particles = StructArray(
-    coordinates = StructArray(Coordinate.(z_vals, ΔE_vals)),  # Ensure StructArray!
-    uncertainty = StructArray(Coordinate.(zeros(num_particles), zeros(num_particles))),
-    derivative = StructArray(Coordinate.(zeros(num_particles), zeros(num_particles))),
-    derivative_uncertainty = StructArray(Coordinate.(zeros(num_particles), zeros(num_particles))))
+    # particles = StructArray{Particle{Float64}}(StructArray(Coordinate.(z_vals, ΔE_vals)))
+
+
+    particles = StructArray{Particle{Float64}}((
+    StructArray(Coordinate.(z_vals, ΔE_vals)),  # coordinates
+    StructArray(Coordinate.(zeros(num_particles), zeros(num_particles)))  # uncertainty
+    ))
+
 
     return particles, σ_E, σ_z, energy
 end
 
-function BeamTurn(n_turns::Integer, n_particles::Integer)
-    T = Float64  # Explicit type
-    N = n_turns + 1  # Number of stored turns
-
-    GC.enable(false)  # Disable GC for performance
-    try
-        total_size = n_particles * N
-
-        # Preallocate large contiguous arrays
-        z_data = Vector{T}(undef, total_size)
-        ΔE_data = Vector{T}(undef, total_size)
 
 
-        # Preallocate arrays for uncertainties and derivatives
-        uncertainty_z = Vector{T}(undef, total_size)
-        uncertainty_ΔE = Vector{T}(undef, total_size)
+"""
+    longitudinal_evolve!(
+        particles::StructArray{Particle{T}},
+        params::SimulationParameters{T},
+        buffers::SimulationBuffers{T}
+    ) where T<:Float64 -> Tuple{T, T, T}
 
-        derivative_z = Vector{T}(undef, total_size)
-        derivative_ΔE = Vector{T}(undef, total_size)
+Evolve particles through the accelerator for multiple turns.
 
-
-        derivative_uncertainty_z = Vector{T}(undef, total_size)
-        derivative_uncertainty_ΔE = Vector{T}(undef, total_size)
-
-
-        # Preallocate states
-        states = Vector{StructArray{Particle{T}}}(undef, N)
-
-        @inbounds for i in 1:N
-            idx_range = ((i-1) * n_particles + 1):(i * n_particles)
-
-            states[i] = StructArray(
-                coordinates = StructArray(Coordinate{T}.(z_data[idx_range], 
-                                                         ΔE_data[idx_range])),
-                uncertainty = StructArray(Coordinate{T}.(uncertainty_z[idx_range], 
-                                                         uncertainty_ΔE[idx_range])),
-                derivative = StructArray(Coordinate{T}.(derivative_z[idx_range], 
-                                                        derivative_ΔE[idx_range])),
-                derivative_uncertainty = StructArray(Coordinate{T}.(derivative_uncertainty_z[idx_range], 
-                                                                     derivative_uncertainty_ΔE[idx_range]))
-            )
-        end
-
-        return BeamTurn{T, N}(states)
-    finally
-        GC.enable(true)  # Re-enable GC
-    end
-end
-
-function apply_wakefield_inplace!(
-    particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64},#::StructArray{Particle{T}}, 
-    buffers::SimulationBuffers{T}, 
-    wake_factor::T, 
-    wake_sqrt::T, 
-    cτ::T,  
-    n_particles::Int,
-    current::T,
-    σ_z::T,
-    bin_edges::StepRangeLen{T, Base.TwicePrecision{T}, Base.TwicePrecision{T}, Int64}
-    ) where T<:Float64
-    
-    
-    if !all(iszero, buffers.λ)
-        fill!(buffers.λ, zero(T))::Vector{T}
-    end
-    if !all(iszero, buffers.WF_temp)
-        fill!(buffers.WF_temp, zero(T))::Vector{T}
-    end
-    if !all(iszero, buffers.convol)
-        fill!(buffers.convol, zero(T))::Vector{Complex{T}}
-    end
-
-
-    
-    inv_cτ::Float64 = 1 / cτ
-
-    # Calculate histogram
-    bin_centers::Vector{T}, bin_amounts::Vector{T} = calculate_histogram(particles.coordinates.z, bin_edges)
-    nbins::Int64 = length(bin_centers)
-    power_2_length::Int64 = nbins  * 2 #next_power_of_two(2*nbins-1)
-    
-    
-    # Calculate wake function for each bin
-    for i in eachindex(bin_centers)
-        z= bin_centers[i]
-        buffers.WF_temp[i] = z > 0 ? zero(T) : wake_factor * exp(z * inv_cτ) * cos(wake_sqrt * z)
-    end
-    
-    # Calculate line charge density using Gaussian smoothing
-    delta_std::Float64 = (15 * σ_z) / σ_z / 100
-    @turbo for i in eachindex(bin_centers)
-        buffers.λ[i] = delta(bin_centers[i], delta_std)
-    end
-    
-    # Prepare arrays for convolution
-    normalized_amounts::Vector{Float64} = bin_amounts .* (1/n_particles)
-    λ = buffers.λ[1:nbins]
-    WF_temp = buffers.WF_temp[1:nbins]
-    convol = buffers.convol[1:power_2_length]
-    
-    # Perform convolution and scale by current
-    convol .= FastLinearConvolution(WF_temp, λ .* normalized_amounts, power_2_length) .* current
-    
-    # Interpolate results back to particle positions
-    temp_z = range(minimum(particles.coordinates.z), maximum(particles.coordinates.z), length=length(convol))
-    resize!(buffers.potential, length(particles.coordinates.z))
-    buffers.potential .= LinearInterpolation(temp_z, real.(convol), extrapolation_bc=Line()).(particles.coordinates.z)
-    
-    # Update particle energies and calculate wake function
-    @turbo for i in eachindex(particles.coordinates.z)
-        z = particles.coordinates.z[i]
-        particles.coordinates.ΔE[i] -= buffers.potential[i]
-        buffers.WF[i] = z > 0 ? zero(T) : wake_factor * exp(z * inv_cτ) * cos(wake_sqrt * z)
-    end
-    
-    return nothing
-end
-
+Returns: (σ_E, σ_z, E0) - Final energy spread, bunch length, and reference energy
+"""
 function longitudinal_evolve!(
-    n_turns::Int,
-    particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64},#::StructArrays.StructVector{B, U, Float64},
-    ϕs::T,
-    α_c::T,
-    mass::T,
-    voltage::T,
-    harmonic::Int64,
-    acc_radius::T,
-    freq_rf::T,
-    pipe_radius::T,
-    E0::T,
-    σ_E::T,
-    σ_z::T;
-    update_η::Bool=false,
-    update_E0::Bool=false,
-    SR_damping::Bool=false,
-    use_excitation::Bool=false,
-    use_wakefield::Bool=false,
-    display_counter::Bool=true,
-    plot_scatter::Bool=false,
-    plot_potential::Bool=false,
-    plot_WF::Bool=false)::Tuple where {B <: NamedTuple, U <: NamedTuple, T <: Float64}
-
+    particles::StructArray{Particle{T}},
+    params::SimulationParameters{T},
+    buffers::SimulationBuffers{T}
+) where T<:Float64
+    
+    # Extract parameters
+    E0::T = params.E0
+    mass::T = params.mass
+    voltage::T = params.voltage
+    harmonic::Int = params.harmonic
+    radius::T = params.radius
+    freq_rf::T = params.freq_rf
+    pipe_radius::T = params.pipe_radius
+    α_c::T = params.α_c
+    ϕs::T = params.ϕs
+    n_turns::Int = params.n_turns
+    use_wakefield::Bool = params.use_wakefield
+    update_η::Bool = params.update_η
+    update_E0::Bool = params.update_E0
+    SR_damping::Bool = params.SR_damping
+    use_excitation::Bool = params.use_excitation
+    
     # Pre-compute physical constants
-    γ0::Float64 = E0 / mass
-    β0::Float64 = sqrt(1 - 1/γ0^2)
-    η0::Float64 = α_c - 1/(γ0^2)
-    sin_ϕs::Float64 = sin(ϕs)
-    rf_factor::Float64 = freq_rf * 2π / (β0 * SPEED_LIGHT)
-    σ_E0::Float64 = std(particles.coordinates.ΔE)
-    σ_z0::Float64 = std(particles.coordinates.z)
-
-    # Initialize buffers
-    n_particles::Int64 = length(particles.coordinates.z)
-    buffers = create_simulation_buffers(n_particles, Int(n_particles/10), T)
-    nbins::Int64 = next_power_of_two(Int(10^(ceil(Int, log10(n_particles)-2))))
-    bin_edges = range(-7.5*σ_z, 7.5*σ_z, length=nbins+1)
-
-    # Initialize wakefield parameters if needed
+    γ0::T = E0 / mass
+    β0::T = sqrt(1 - 1/γ0^2)
+    η0::T = α_c - 1/(γ0^2)
+    sin_ϕs::T = sin(ϕs)
+    rf_factor::T = freq_rf * 2π / (β0 * SPEED_LIGHT)
+    
+    # Get initial spreads
+    n_particles::Int = length(particles)
+    σ_E0::T = std(particles.coordinates.ΔE)
+    σ_z0::T = std(particles.coordinates.z)
+    
     if use_wakefield
-        kp::Float64 = T(3e1)
-        Z0::Float64 = T(120π)
-        cτ::Float64 = T(4e-3)
-        wake_factor::Float64 = Z0 * SPEED_LIGHT / (π * pipe_radius^2)
-        wake_sqrt::Float64 = sqrt(2*kp/pipe_radius)
+        nbins::Int = next_power_of_two(Int(10^(ceil(Int, log10(n_particles)-2))))
+        bin_edges = range(-7.5*σ_z0, 7.5*σ_z0, length=nbins+1)
+        kp::T = 3e1
+        Z0::T = 120π
+        cτ::T = 4e-3
+        wake_factor::T = Z0 * SPEED_LIGHT / (π * pipe_radius^2)
+        wake_sqrt::T = sqrt(2*kp/pipe_radius)
     end
-
+    
     # Setup progress meter
-    if display_counter
-        p::Progress = Progress(n_turns, desc="Simulating Turns: ")
-    end
-
-
+    p = Progress(n_turns, desc="Simulating Turns: ")
+    
+    # # For tracking convergence
+    # σ_E_buffer = CircularBuffer{T}(50)
+    # E0_buffer = CircularBuffer{T}(50)
+    # σ_z_buffer = CircularBuffer{T}(50)
+    # push!(σ_E_buffer, σ_E0)
+    # push!(E0_buffer, E0)
+    # push!(σ_z_buffer, σ_z0)
+    
     # Main evolution loop
-    @inbounds for turn in 1:n_turns
-
+    for turn in 1:n_turns
+        # Calculate current spreads
+        σ_E::T = std(particles.coordinates.ΔE)
+        σ_z::T = std(particles.coordinates.z)
+        
+        # Store previous energy values for update_E0 if needed
+        if update_E0
+            ΔE_before = copy(particles.coordinates.ΔE)
+        end
+        
         # RF voltage kick
-        σ_E::Float64 = std(particles.coordinates.ΔE)
-        σ_z::Float64 = std(particles.coordinates.z)
-
-        energy_gain_from_voltage!(voltage, sin_ϕs, rf_factor, ϕs, n_particles, particles)
-
+        rf_kick!(voltage, sin_ϕs, rf_factor, ϕs, particles)
+        
+        # Quantum excitation
         if use_excitation
-            quantum_excitation!(E0, acc_radius, σ_E0, buffers.potential, n_particles, particles)
+            quantum_excitation!(E0, radius, σ_E0, buffers, particles)
         end
-
+        
+        # Synchrotron radiation damping
         if SR_damping
-            synchrotron_radiation!(E0, acc_radius, n_particles, particles)
+            synchrotron_radiation!(E0, radius, particles)
         end
-
+        
+        # Apply wakefield effects
         if use_wakefield
-            curr::Float64  =  (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/acc_radius * σ_z / (η0*σ_E0^2)
-            apply_wakefield_inplace!(
-                    particles, buffers, wake_factor, wake_sqrt, cτ,
-                    n_particles, curr, σ_z, bin_edges
-                )
-        end
+            curr::T = (1e11/(10.0^floor(Int, log10(n_particles)))) * n_particles /E0 /2/π/radius * σ_z / (η0*σ_E0^2)
+            apply_wakefield_inplace!(particles, buffers, wake_factor, wake_sqrt, cτ, curr, σ_z, bin_edges)
+            
+            if update_E0
+                # Update reference energy based on collective effects
 
+                E0 += mean(particles.coordinates.ΔE .- ΔE_before)
+                
+                # Zero the mean energy deviation
+                mean_ΔE = mean(particles.coordinates.ΔE)
+                for i in 1:n_particles
+                    particles.coordinates.ΔE[i] -= mean_ΔE
+                end
+            end
+        end
+        
+        # Update reference energy if needed
         if update_E0
             E0 += voltage * sin_ϕs
-            γ0= E0/mass 
-            β0= sqrt(1 - 1/γ0^2)
+            γ0 = E0/mass 
+            β0 = sqrt(1 - 1/γ0^2)
+            
+            # Adjust for radiation losses
             if SR_damping
-                ∂U_∂E::Float64 = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
-                E0 -= ∂U_∂E * E0  / 4
+                ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / radius
+                E0 -= ∂U_∂E * E0 / 4
                 γ0 = E0/mass 
-                β0= sqrt(1 - 1/γ0^2)
-            end
-            if use_wakefield
-                E0 += mean(particles.coordinates.ΔE)
-                particles.coordinates.ΔE .-= mean(particles.coordinates.ΔE)
+                β0 = sqrt(1 - 1/γ0^2)
             end
         end
-
+        
+        # Update phase advance
         if update_η
-            @turbo for i in 1:n_particles
-                buffers.Δγ[i] = particles.coordinates.ΔE[i] / mass
-                buffers.η[i] = α_c - 1/(γ0 + buffers.Δγ[i])^2
-                buffers.coeff[i] = 2π * harmonic * buffers.η[i] / (β0 * β0 * E0)
-                buffers.ϕ[i] = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-                buffers.ϕ[i] += buffers.coeff[i] * particles.coordinates.ΔE[i]
+            for i in 1:n_particles
+                # Calculate slip factor for each particle
+                Δγ_i = particles.coordinates.ΔE[i] / mass
+                η_i = α_c - 1/(γ0 + Δγ_i)^2
+                coeff_i = 2π * harmonic * η_i / (β0 * β0 * E0)
+                
+                # Get current phase
+                ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+                
+                # Update phase
+                ϕ_i += coeff_i * particles.coordinates.ΔE[i]
+                
+                # Update longitudinal position
+                particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
             end
         else
-            coeff::Float64 = 2π * harmonic * η0 / (β0 * β0 * E0)
-            @turbo for i in 1:n_particles
-                buffers.ϕ[i] = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-                buffers.ϕ[i] += coeff * particles.coordinates.ΔE[i]
+            # Using constant slip factor
+            coeff = 2π * harmonic * η0 / (β0 * β0 * E0)
+            
+            for i in 1:n_particles
+                # Get current phase
+                ϕ_i = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+                
+                # Update phase
+                ϕ_i += coeff * particles.coordinates.ΔE[i]
+                
+                # Update longitudinal position
+                particles.coordinates.z[i] = ϕ_to_z(ϕ_i, rf_factor, ϕs)
             end
         end
-
-        rf_factor = calc_rf_factor(freq_rf, β0)
-        ϕ_to_z(buffers.ϕ, rf_factor, ϕs, n_particles, particles)
-
-        if display_counter
-            next!(p)
-        end
-    end
-    return (σ_E, σ_z, E0)
-end
-
-
-
-function energy_gain_from_voltage!(
-    voltage::T,
-    sin_ϕs::T,
-    rf_factor::T,
-    ϕs::T,
-    n_particles::Int64,
-    particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64}#::StructArray{Particle{T}}
-    ) where T<:Float64
-
-    @turbo for i in 1:n_particles
-        particles.coordinates.ΔE[i] += voltage * (sin(z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)) - sin_ϕs)
-    end
-end
-
-function quantum_excitation!(E0::T, acc_radius::T, σ_E0::T, buffer::Vector{Float64}, n_particles::Int64, particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64}#::StructArray{Particle{T}}
-    ) where T<:Float64
-    ∂U_∂E::Float64 = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
-    excitation::Float64 = sqrt(1-(1-∂U_∂E)^2) * σ_E0
-    
-    samples = zeros(Float64, 100)
-    randn!(buffer)::Vector{Float64}
-    X(p::StochasticTriple, buff::Float64, excitation::Float64) = p + excitation * buff
-    for i in 1:n_particles
-        # particles.coordinates.ΔE[i] = particles.coordinates.ΔE[i] + excitation * buffer[i] #This is not actually the potential, merely a random number with the right distribution, I just use the buffer because its already allocated
         
-        samples .= [derivative_estimate(p -> X(p, buffer[i], excitation), particles.coordinates.ΔE[i]) for j in 1:100]
-        particles.derivative.ΔE[i] = mean(samples)
-        particles.coordinates.ΔE[i] = particles.coordinates.ΔE[i] + excitation * buffer[i]
-        # println(mean(samples))
-        particles.derivative_uncertainty.ΔE[i] = std(samples) / sqrt(1000)
+        # Update RF factor with new beta
+        rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
+        
+        # Update tracking buffers
+        # push!(σ_E_buffer, σ_E)
+        # push!(E0_buffer, E0)
+        # push!(σ_z_buffer, σ_z)
+        
+        # Check for convergence
+        # if abs(mean(σ_E_buffer)/mean(E0_buffer) - σ_E/E0) < 1e-9
+        #     @info "Converged at turn $turn with σ_E = $(mean(σ_E_buffer))"
+        #     σ_E = mean(σ_E_buffer)
+        #     σ_z = mean(σ_z_buffer)
+        #     E0 = mean(E0_buffer)
+        #     return σ_E, σ_z, E0
+        # end
+        
+        # Update progress
+        next!(p)
     end
     
+    # Final spreads if not converged
+    # particles.coordinates.z = [p.coordinates.z for p in particles]
+    # particles.coordinates.ΔE = [p.coordinates.ΔE for p in particles]
+    σ_E = std(particles.coordinates.ΔE)
+    σ_z = std(particles.coordinates.z)
+    
+    return σ_E, σ_z, E0
 end
-
-function synchrotron_radiation!(E0::T, acc_radius::T, n_particles::Int64, particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64}#::StructArray{Particle{T}}
-    ) where T<:Float64
-    ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / acc_radius
-    @turbo for i in 1:n_particles
-        particles.coordinates.ΔE[i] *= (1 - ∂U_∂E)
-    end
-end
-

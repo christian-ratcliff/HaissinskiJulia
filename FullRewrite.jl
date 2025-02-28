@@ -8,6 +8,7 @@ begin
     using BenchmarkTools
     using CairoMakie
     using StructArrays
+    using StochasticAD
 end
 
 begin
@@ -57,7 +58,8 @@ particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0,σ_E0, Int64(1e
 #     use_wakefield=true, update_η=true, update_E0=true, SR_damping=true,
 #     use_excitation=true)
 
-
+particles.coordinates.ΔE
+particles.derivative.ΔE
 particles.derivative_uncertainty.ΔE
 
 begin
@@ -94,39 +96,65 @@ end
 
 println(typeof(particles))
 
-show(err)
+
 
 @btime particles.derivative.ΔE .= 0
 
-using StochasticAD
+
 n_particles = length(particles)
 buffer = zeros(Float64, n_particles)
 using Random
+using Distributions
 randn!(buffer)
-X(p, buff::Float64) = p + 2. * buff
-function testfunc!(buffer::Vector{Float64}, n_particles::Int64, particles::StructVector{@NamedTuple{coordinates::Coordinate{Float64}, uncertainty::Coordinate{Float64}, derivative::Coordinate{Float64}, derivative_uncertainty::Coordinate{Float64}}, @NamedTuple{coordinates::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}, derivative_uncertainty::StructArrays.StructVector{Coordinate{Float64}, @NamedTuple{z::Vector{Float64}, ΔE::Vector{Float64}}, Int64}}, Int64}#::StructArray{Particle{T}}
-    )
+X(p, delE::Float64) = delE + 2. * p
+function testfunc!(buffer::Vector{Float64}, n_particles::Int64, particles::StructArray{Particle{T}}
+) where T
 
     samples = zeros(Float64, 100)
     randn!(buffer)::Vector{Float64}
-    X(p::StochasticTriple, buff::Float64) = p + 2. * Normal()
+    X(p::StochasticTriple, delE::Float64) = delE + 2. * p
     for i in 1:n_particles
         # particles.coordinates.ΔE[i] = particles.coordinates.ΔE[i] + excitation * buffer[i] #This is not actually the potential, merely a random number with the right distribution, I just use the buffer because its already allocated
         
-        samples .= [derivative_estimate(p -> X(p, buffer[i]), particles.coordinates.ΔE[i]) for j in 1:100]
+        samples .= [derivative_estimate(p -> X(p, particles.coordinates.ΔE[i]), randn()) for j in 1:100]
         particles.derivative.ΔE[i] = mean(samples)
-        particles.coordinates.ΔE[i] = particles.coordinates.ΔE[i] + excitation * buffer[i]
+        particles.coordinates.ΔE[i] = particles.coordinates.ΔE[i] + 2 * buffer[i]
         # println(mean(samples))
         particles.derivative_uncertainty.ΔE[i] = std(samples) / sqrt(1000)
     end
     
 end
 
+
+function testfunc!(buffer::Vector{Float64}, n_particles::Int64, particles::StructArray{Particle{T}}
+    ) where T
+    
+        samples = zeros(Float64, 100)
+        randn!(buffer)  # Fill buffer with standard normal noise
+    
+        X(p::StochasticTriple, delE::Float64) = delE + 2.0 * p  # Function to differentiate
+    
+        for i in 1:n_particles
+            samples .= [derivative_estimate(p -> X(p, particles.coordinates.ΔE[i]), pdf(Normal(), p)) for _ in 1:100]
+            particles.derivative.ΔE[i] = mean(samples)
+            particles.coordinates.ΔE[i] += 2 * buffer[i]
+            particles.derivative_uncertainty.ΔE[i] = std(samples) / sqrt(100)
+        end
+    end
+
+
+
 samples = [Vector{Float64}(undef, 100) for _ in 1:n_particles]  # Preallocate
+
+testfunc!(buffer, n_particles, particles)
+
+particles.derivative.ΔE
+particles.derivative_uncertainty.ΔE
+
 
 @inbounds for i in 1:n_particles
     for j in 1:100
-        samples[i][j] = derivative_estimate(p -> X(p, buffer[i]), particles.coordinates.ΔE[i])
+        samples[i][j] = derivative_estimate(p -> X(p,  particles.coordinates.ΔE[i]), randn!(buffer))
     end
 end
 
@@ -135,3 +163,4 @@ X(2, buffer[1])
 stochastic_triple(p -> X(p, buffer[1]), particles.coordinates.ΔE[1] )
 derivative_estimate(p -> X(p, buffer[1]), particles.coordinates.ΔE[1])
 samples
+
