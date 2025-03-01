@@ -47,7 +47,7 @@ function compute_sensitivity(
         # Verify the parameter transformation worked correctly
         if typeof(transform) <: VoltageTransform
             println("Transformed voltage parameter: ", params_copy.voltage)
-            println("Parameter type: ", typeof(params_copy.voltage))
+            # println("Parameter type: ", typeof(params_copy.voltage))
         end
         
         # Use SUPER simplified parameters for gradient calculation
@@ -86,7 +86,7 @@ function compute_sensitivity(
             return fom_value
         catch e
             println("Error in sensitivity_fn with parameter value: ", p)
-            println("Parameter type: ", typeof(p))
+            # println("Parameter type: ", typeof(p)
             println("Error: ", e)
             
             # For StochasticTriple, if we fail, we need to return a value with the correct derivative

@@ -43,10 +43,15 @@ function rf_kick!(
         _ = StochasticAD.propagate(apply_kick, voltage)
     else
         # Standard implementation for non-StochasticTriple case
-        for i in 1:length(particles)
-            ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-        end
+        # for i in 1:length(particles)
+        #     ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+        #     particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+        # # end
+        # z_vals = copy(particles.coordinates.z)  # Cache the value
+        # ΔE_vals = copy(particles.coordinates.ΔE)  # Cache the value
+        # sinϕ = sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs
+        particles.coordinates.ΔE .= particles.coordinates.ΔE .+ voltage .* (sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs)
+        # particles.coordinates.ΔE .= ΔE_vals  # Store the updated value
     end
     
     return nothing

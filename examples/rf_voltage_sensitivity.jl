@@ -1,13 +1,3 @@
-"""
-rf_voltage_sensitivity.jl - RF voltage sensitivity analysis example
-
-This example demonstrates how to:
-1. Set up a parameter sensitivity analysis for RF voltage
-2. Calculate sensitivity of energy spread and bunch length 
-3. Scan voltage over a range of values
-4. Visualize parameter dependencies and gradients
-"""
-
 include("../src/StochasticHaissinski.jl")
 
 begin
@@ -85,7 +75,7 @@ function test_stochastic_ad()
     println("Estimated: $estimated ± $uncertainty")
     println("Relative error: $(abs(estimated - true_derivative)/true_derivative * 100)%")
     
-    return abs(estimated - true_derivative) < uncertainty * 3
+    return abs(estimated - true_derivative) <= uncertainty * 3
 end
 
 # Verify StochasticAD is working
@@ -144,7 +134,7 @@ params_length, foms_length, grads_length, errors_length = scan_parameter(
 )
 
 # Plot results
-println("\nCreating plots...")
+
 
 # Energy spread sensitivity plot
 p1 = plot_sensitivity_scan(
@@ -170,4 +160,3 @@ savefig(p2, "rf_voltage_bunch_length.png")
 
 println("Analysis complete. Results saved to rf_voltage_energy_spread.png and rf_voltage_bunch_length.png")
 
-randn!(MersenneTwister(Int(round(rand()*100))), zeros(5))

@@ -232,7 +232,6 @@ function longitudinal_evolve!(
             (freq, beta) -> freq * 2π / (beta * SPEED_LIGHT),
             freq_rf, β0
         )
-        println(std(particles.coordinates.ΔE))
         # Update progress
         next!(p)
     end

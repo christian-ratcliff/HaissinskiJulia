@@ -1,13 +1,3 @@
-"""
-basic_simulation.jl - Basic Haissinski simulation example
-
-This example demonstrates how to:
-1. Set up simulation parameters
-2. Generate an initial particle distribution
-3. Run the evolution simulation
-4. Visualize the results
-"""
-
 include("../src/StochasticHaissinski.jl")
 
 begin
@@ -30,21 +20,21 @@ begin
     radius = 250.0
     pipe_radius = 0.00025
     α_c = 3.68e-4
-    γ = E0_ini/mass
-    β = sqrt(1 - 1/γ^2)
-    η = α_c - 1/γ^2
+    γ = E0_ini / mass
+    β = sqrt(1 - 1 / γ^2)
+    η = α_c - 1 / γ^2
     sin_ϕs = 0.5
-    ϕs = 5π/6
-    freq_rf = (ϕs + 10*π/180) * β * SPEED_LIGHT / (2π)
+    ϕs = 5π / 6
+    freq_rf = (ϕs + 10 * π / 180) * β * SPEED_LIGHT / (2π)
 end;
 
 # Distribution parameters
 begin
     μ_z = 0.0
     μ_E = 0.0
-    ω_rev = 2 * π / ((2*π*radius) / (β*SPEED_LIGHT))
+    ω_rev = 2 * π / ((2 * π * radius) / (β * SPEED_LIGHT))
     σ_E0 = 1e6
-    σ_z0 = sqrt(2 * π) * SPEED_LIGHT / ω_rev * sqrt(α_c*E0_ini/harmonic/voltage/abs(cos(ϕs))) * σ_E0 / E0_ini
+    σ_z0 = sqrt(2 * π) * SPEED_LIGHT / ω_rev * sqrt(α_c * E0_ini / harmonic / voltage / abs(cos(ϕs))) * σ_E0 / E0_ini
 end;
 # Create simulation parameters
 sim_params = SimulationParameters(
@@ -71,7 +61,7 @@ particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_parti
 println("Initial beam parameters: σ_E = $σ_E0 eV, σ_z = $σ_z0 m")
 
 # Create buffers
-buffers = create_simulation_buffers(n_particles, Int(n_particles/10), Float64);
+buffers = create_simulation_buffers(n_particles, Int(n_particles / 10), Float64);
 
 # Run simulation
 σ_E_final, σ_z_final, E0_final = longitudinal_evolve!(particles, sim_params, buffers)
@@ -81,32 +71,32 @@ z_values = particles.coordinates.z;
 ΔE_values = particles.coordinates.ΔE;
 
 # Create phase space plot
-p1 = scatter(z_values ./ σ_z_final, ΔE_values ./ σ_E_final, 
-            markersize=1, 
-            markerstrokewidth=0, 
-            alpha=0.5,
-            xlabel="z/σ_z", 
-            ylabel="ΔE/σ_E",
-            title="Phase Space Distribution",
-            label=nothing)
+p1 = scatter(z_values ./ σ_z_final, ΔE_values ./ σ_E_final,
+    markersize=1,
+    markerstrokewidth=0,
+    alpha=0.5,
+    xlabel="z/σ_z",
+    ylabel="ΔE/σ_E",
+    title="Phase Space Distribution",
+    label=nothing)
 
 # Create energy distribution histogram
-p2 = histogram(ΔE_values ./ σ_E_final, 
-              bins=100, 
-              normalize=:pdf,
-              xlabel="ΔE/σ_E", 
-              ylabel="Probability Density",
-              title="Energy Distribution",
-              label=nothing)
+p2 = histogram(ΔE_values ./ σ_E_final,
+    bins=100,
+    normalize=:pdf,
+    xlabel="ΔE/σ_E",
+    ylabel="Probability Density",
+    title="Energy Distribution",
+    label=nothing)
 
 # Create position distribution histogram
-p3 = histogram(z_values ./ σ_z_final, 
-              bins=100, 
-              normalize=:pdf,
-              xlabel="z/σ_z", 
-              ylabel="Probability Density",
-              title="Position Distribution",
-              label=nothing)
+p3 = histogram(z_values ./ σ_z_final,
+    bins=100,
+    normalize=:pdf,
+    xlabel="z/σ_z",
+    ylabel="Probability Density",
+    title="Position Distribution",
+    label=nothing)
 
 # Combine plots
 plot(p1, p2, p3, layout=(2, 2), size=(1000, 800))
