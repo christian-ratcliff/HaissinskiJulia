@@ -34,9 +34,9 @@ Simple particle representation with coordinates in phase space.
 # Fields
 - `coordinates::Coordinate{T}`: Current position in phase space
 """
-struct Particle{T} <: FieldVector{2, Coordinate}
+struct Particle{T} <: FieldVector{1, Coordinate}
     coordinates::Coordinate{T}
-    uncertainty::Coordinate{T}
+    # uncertainty::Coordinate{T}
 end
 
 """
@@ -149,4 +149,11 @@ struct SimulationBuffers{T<:Float64}
     convol::Vector{Complex{T}}
     ϕ::Vector{T}
     random_buffer::Vector{T}
+    # New buffers for optimized calculations
+    normalized_λ::Vector{T}      # For wakefield calculations
+    fft_buffer1::Vector{Complex{T}} # For in-place FFT operations
+    fft_buffer2::Vector{Complex{T}} # For in-place FFT operations
+    real_buffer::Vector{T}       # For storing real parts
+    bin_counts::Vector{Int}      # For histogram calculations
+    thread_local_buffers::Vector{Dict{Symbol, Any}}
 end

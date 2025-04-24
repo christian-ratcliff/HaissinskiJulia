@@ -36,7 +36,7 @@ function apply_wakefield_inplace!(
     current::T,
     σ_z::T,
     bin_edges
-) where T<:Float64
+    ) where T<:Float64
     
     # Clear buffers
     fill!(buffers.λ, zero(T))
@@ -73,13 +73,17 @@ function apply_wakefield_inplace!(
     
     # Perform convolution and scale by current
     convol .= FastLinearConvolution(WF_temp, λ .* normalized_amounts, power_2_length) .* current
+
+    
     
     # Interpolate results back to particle positions
     temp_z = range(minimum(particles.coordinates.z), maximum(particles.coordinates.z), length=length(convol))
     resize!(buffers.potential, length(particles.coordinates.z))
     
     # Create an interpolation function
-    itp = LinearInterpolation(temp_z, real.(convol), extrapolation_bc=Line())
+    # itp = LinearInterpolation(temp_z, real.(convol), extrapolation_bc=Line())
+    copyto!(buffers.temp_ΔE[1:length(convol)], real.(convol))
+    itp = LinearInterpolation(temp_z, buffers.temp_ΔE[1:length(convol)], extrapolation_bc=Line())
     
     # Apply the interpolated potential to particles
     @inbounds for i in eachindex(particles.coordinates.z)
