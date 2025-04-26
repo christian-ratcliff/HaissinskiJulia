@@ -44,7 +44,7 @@ function synchrotron_radiation!(
     damping_factor = 1 - ∂U_∂E
     
     # Apply damping in parallel chunks
-    chunk_size = max(1, length(particles) ÷ Threads.nthreads() ÷ 4)
+    chunk_size = max(1, length(particles) ÷ Threads.nthreads())
     
     Threads.@threads for chunk_start in 1:chunk_size:length(particles)
         chunk_end = min(chunk_start + chunk_size - 1, length(particles))
