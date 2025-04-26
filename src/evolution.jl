@@ -272,7 +272,8 @@ Returns: (σ_E, σ_z, E0) - Final energy spread, bunch length, and reference ene
 function longitudinal_evolve!(
     particles::StructArray{Particle{T}},
     params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
-    buffers::SimulationBuffers{T}
+    buffers::SimulationBuffers{T};
+    show_progress::Bool = true
     ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF}
     
     # Extract parameters
@@ -319,7 +320,9 @@ function longitudinal_evolve!(
     end
     
     # Setup progress meter
-    p = Progress(n_turns, desc="Simulating Turns: ")
+    if show_progress
+        p = Progress(n_turns, desc="Simulating Turns: ")
+    end
     
     # Pre-allocate energy buffer for updates
     ΔE_before = Vector{T}(undef, n_particles)
@@ -402,7 +405,9 @@ function longitudinal_evolve!(
         rf_factor = freq_rf * 2π / (β0 * SPEED_LIGHT)
         
         # Update progress
-        next!(p)
+        if show_progress
+            next!(p)
+        end
     end
     
     # Final spreads

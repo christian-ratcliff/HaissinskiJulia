@@ -4,6 +4,7 @@ begin
     using .StochasticHaissinski
     using BenchmarkTools
     using Statistics
+    using LIKWID
 end
 
 begin
@@ -33,6 +34,7 @@ end;
 
 
 begin
+    n_turns = 100
     # Create simulation parameters
     sim_params = SimulationParameters(
         E0_ini,      # E0
@@ -44,7 +46,7 @@ begin
         α_c,         # α_c
         ϕs,          # ϕs
         freq_rf,     # freq_rf
-        100,       # n_turns
+        n_turns,       # n_turns
         true,        # use_wakefield
         true,        # update_η
         true,        # update_E0
@@ -56,18 +58,35 @@ begin
     particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);
     buffers = create_simulation_buffers(n_particles, Int(n_particles/10), Float64);
     # Run simulation
-    σ_E_final, σ_z_final, E0_final = longitudinal_evolve!(particles, sim_params, buffers)
+    σ_E_final, σ_z_final, E0_final = longitudinal_evolve!(particles, sim_params, buffers; show_progress=false);
     particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);
 end;
 
-@btime longitudinal_evolve!(particles, sim_params, buffers)
+@btime longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
 #  128.272 ms (7937 allocations: 43.20 MiB)  1e5 particles, 1e2 turns, less allcoaations, slightly longer, much more memory
 
 #current: 209.533 ms (6990 allocations: 189.88 MiB)  1e5 particles, 1e2 turns
-@benchmark longitudinal_evolve!(particles, sim_params, buffers)
+benchmark_results = @benchmark longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
+display(benchmark_results)
 # BenchmarkTools.Trial: 34 samples with 1 evaluation per sample.
 #  Range (min … max):  130.563 ms … 199.680 ms  ┊ GC (min … max): 0.60% … 0.81%
 #  Time  (median):     143.747 ms               ┊ GC (median):    0.43%
 #  Time  (mean ± σ):   147.825 ms ±  18.484 ms  ┊ GC (mean ± σ):  0.44% ± 0.12%
 #  Memory estimate: 43.20 MiB, allocs estimate: 7937.
 
+metrics, events = @perfmon "FLOPS_DP" begin
+    longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
+end
+
+# Display FLOP count
+flop_count = first(events["FLOPS_DP"])["RETIRED_SSE_AVX_FLOPS_ALL"]
+println("Total FLOPs: ", flop_count)
+
+# Calculate GFLOPS rate
+execution_time = median(benchmark_results.times) / 1e9  # Convert ns to seconds
+gflops_rate = flop_count / execution_time / 1e9
+println("GFLOPS rate: ", gflops_rate)
+
+# You can also calculate FLOPs per particle per turn
+flops_per_particle_per_turn = flop_count / n_particles / n_turns
+println("FLOPs per particle per turn: ", flops_per_particle_per_turn)
