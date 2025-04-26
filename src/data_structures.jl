@@ -135,9 +135,36 @@ Pre-allocated buffers for efficient computation during simulation.
 - `ϕ::Vector{T}`: Phase values
 - `random_buffer::Vector{T}`: Buffer for random numbers
 """
+# struct SimulationBuffers{T<:Float64}
+#     WF::Vector{T}
+#     potential::Vector{T}
+#     Δγ::Vector{T}
+#     η::Vector{T}
+#     coeff::Vector{T}
+#     temp_z::Vector{T}
+#     temp_ΔE::Vector{T}
+#     temp_ϕ::Vector{T}
+#     WF_temp::Vector{T}
+#     λ::Vector{T}
+#     convol::Vector{Complex{T}}
+#     ϕ::Vector{T}
+#     random_buffer::Vector{T}
+#     # New buffers for optimized calculations
+#     normalized_λ::Vector{T}      # For wakefield calculations
+#     fft_buffer1::Vector{Complex{T}} # For in-place FFT operations
+#     fft_buffer2::Vector{Complex{T}} # For in-place FFT operations
+#     real_buffer::Vector{T}       # For storing real parts
+#     bin_counts::Vector{Int}      # For histogram calculations
+#     thread_local_buffers::Vector{Dict{Symbol, Any}}
+# end
+
+
+
+# Add the new fields to the SimulationBuffers struct definition
 struct SimulationBuffers{T<:Float64}
+    # Existing fields...
     WF::Vector{T}
-    potential::Vector{T}
+    potential::Vector{T} # Will store interpolated potential for local particles
     Δγ::Vector{T}
     η::Vector{T}
     coeff::Vector{T}
@@ -149,11 +176,13 @@ struct SimulationBuffers{T<:Float64}
     convol::Vector{Complex{T}}
     ϕ::Vector{T}
     random_buffer::Vector{T}
-    # New buffers for optimized calculations
-    normalized_λ::Vector{T}      # For wakefield calculations
-    fft_buffer1::Vector{Complex{T}} # For in-place FFT operations
-    fft_buffer2::Vector{Complex{T}} # For in-place FFT operations
-    real_buffer::Vector{T}       # For storing real parts
-    bin_counts::Vector{Int}      # For histogram calculations
+    normalized_λ::Vector{T}
+    fft_buffer1::Vector{Complex{T}}
+    fft_buffer2::Vector{Complex{T}}
+    real_buffer::Vector{T}
+    bin_counts::Vector{Int} # Used for *local* histogram counts now
     thread_local_buffers::Vector{Dict{Symbol, Any}}
+    # --- New buffers ---
+    global_bin_counts::Vector{Int}          # For storing result of Allreduce on histogram counts
+    potential_values_at_centers_global::Vector{T} # For receiving broadcasted potential grid
 end

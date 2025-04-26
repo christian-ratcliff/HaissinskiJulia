@@ -90,26 +90,51 @@ end
 
 Create pre-allocated buffers for efficient simulation calculations.
 """
+
 # function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Float64)
-#     # Pre-allocate all vectors in parallel groups based on size
-#     particle_vectors = Vector{Vector{T}}(undef, 9)  # For n_particles sized vectors
-#     bin_vectors = Vector{Vector{T}}(undef, 2)       # For nbins sized vectors
+#     # Create power-of-two sized buffers for FFT
+#     power_2_length = next_power_of_two(nbins * 2)
     
-#     # Initialize n_particles sized vectors in parallel
+#     # Pre-allocate vectors in groups based on size for better cache locality
+#     particle_vectors = Vector{Vector{T}}(undef, 9)
+#     bin_vectors = Vector{Vector{T}}(undef, 3)
+#     complex_vectors = Vector{Vector{Complex{T}}}(undef, 3)
+    
+#     # Initialize in parallel
 #     Threads.@threads for i in 1:9
 #         particle_vectors[i] = Vector{T}(undef, n_particles)
 #     end
     
-#     # Initialize nbins sized vectors in parallel
-#     Threads.@threads for i in 1:2
+#     Threads.@threads for i in 1:3
 #         bin_vectors[i] = Vector{T}(undef, nbins)
 #     end
     
-#     # Complex vector (single allocation)
-#     complex_vector = Vector{Complex{T}}(undef, nbins)
+#     Threads.@threads for i in 1:3
+#         complex_vectors[i] = Vector{Complex{T}}(undef, power_2_length)
+#     end
+    
+#     # Integer buffer for histogram
+#     bin_counts = Vector{Int}(undef, nbins)
     
 #     # Random buffer
 #     random_buffer = Vector{T}(undef, n_particles)
+    
+#     # Real part buffer
+#     real_buffer = Vector{T}(undef, power_2_length)
+    
+#     # Create thread-local storage for parallel operations
+#     n_threads = Threads.nthreads()
+#     thread_local_buffers = Vector{Dict{Symbol, Any}}(undef, n_threads)
+    
+#     # Initialize thread-local buffers
+#     for i in 1:n_threads
+#         thread_local_buffers[i] = Dict{Symbol, Any}(
+#             :sum => zero(T),
+#             :count => 0,
+#             :bin_counts => zeros(Int, nbins),
+#             :temp_array => Vector{T}(undef, n_particles ÷ n_threads + 1)
+#         )
+#     end
     
 #     SimulationBuffers{T}(
 #         particle_vectors[1],   # WF
@@ -122,77 +147,90 @@ Create pre-allocated buffers for efficient simulation calculations.
 #         particle_vectors[8],   # temp_ϕ
 #         bin_vectors[1],        # WF_temp
 #         bin_vectors[2],        # λ
-#         complex_vector,        # convol
+#         complex_vectors[1],    # convol
 #         particle_vectors[9],   # ϕ
-#         random_buffer          # random_buffer
+#         random_buffer,         # random_buffer
+#         bin_vectors[3],        # normalized_λ
+#         complex_vectors[2],    # fft_buffer1
+#         complex_vectors[3],    # fft_buffer2
+#         real_buffer,           # real_buffer
+#         bin_counts,            # bin_counts
+#         thread_local_buffers   # thread_local_buffers
 #     )
 # end
 
-function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Float64)
-    # Create power-of-two sized buffers for FFT
-    power_2_length = next_power_of_two(nbins * 2)
-    
-    # Pre-allocate vectors in groups based on size for better cache locality
+# In utils.jl
+function create_simulation_buffers(n_local_particles::Int64, nbins::Int64, T::Type=Float64)
+    # Create power-of-two sized buffers for FFT based on nbins (global property)
+    power_2_length = next_power_of_two(nbins * 2) # FFT length is global
+
+    # Pre-allocate vectors: Particle-sized use n_local_particles, FFT/bin sized use nbins/power_2_length
     particle_vectors = Vector{Vector{T}}(undef, 9)
-    bin_vectors = Vector{Vector{T}}(undef, 3)
-    complex_vectors = Vector{Vector{Complex{T}}}(undef, 3)
-    
-    # Initialize in parallel
+    bin_vectors = Vector{Vector{T}}(undef, 3) # WF_temp, λ, normalized_λ (nbins size)
+    complex_vectors = Vector{Vector{Complex{T}}}(undef, 3) # convol, fft_buffer1/2 (power_2_length size)
+
+    # Initialize particle vectors in parallel
     Threads.@threads for i in 1:9
-        particle_vectors[i] = Vector{T}(undef, n_particles)
+        particle_vectors[i] = Vector{T}(undef, n_local_particles) # Use n_local_particles
     end
-    
+
+    # Initialize bin-sized vectors
     Threads.@threads for i in 1:3
-        bin_vectors[i] = Vector{T}(undef, nbins)
+        bin_vectors[i] = Vector{T}(undef, nbins) # Use global nbins
     end
-    
+
+    # Initialize FFT-sized vectors
     Threads.@threads for i in 1:3
-        complex_vectors[i] = Vector{Complex{T}}(undef, power_2_length)
+        complex_vectors[i] = Vector{Complex{T}}(undef, power_2_length) # Use global FFT length
     end
-    
-    # Integer buffer for histogram
+
+    # Integer buffer for histogram counts (global nbins size)
     bin_counts = Vector{Int}(undef, nbins)
-    
-    # Random buffer
-    random_buffer = Vector{T}(undef, n_particles)
-    
-    # Real part buffer
+    # Buffer for reduced global histogram counts (optional, could reuse bin_counts)
+    global_bin_counts = Vector{Int}(undef, nbins) # For Allreduce result
+
+    # Random buffer (local particle size)
+    random_buffer = Vector{T}(undef, n_local_particles)
+
+    # Real part buffer (global FFT size)
     real_buffer = Vector{T}(undef, power_2_length)
-    
-    # Create thread-local storage for parallel operations
+
+    # Potential values buffer (global nbins size for broadcasted potential)
+    potential_values_at_centers_global = Vector{T}(undef, nbins)
+
+    # Thread-local storage (still useful for threaded loops within a rank if used)
     n_threads = Threads.nthreads()
     thread_local_buffers = Vector{Dict{Symbol, Any}}(undef, n_threads)
-    
-    # Initialize thread-local buffers
     for i in 1:n_threads
         thread_local_buffers[i] = Dict{Symbol, Any}(
-            :sum => zero(T),
-            :count => 0,
-            :bin_counts => zeros(Int, nbins),
-            :temp_array => Vector{T}(undef, n_particles ÷ n_threads + 1)
+            # Example entries - adjust as needed for threaded parts
+             :temp_array => Vector{T}(undef, max(1, n_local_particles ÷ n_threads)) # Size based on local particles
         )
     end
-    
+
     SimulationBuffers{T}(
-        particle_vectors[1],   # WF
-        particle_vectors[2],   # potential
-        particle_vectors[3],   # Δγ
-        particle_vectors[4],   # η
-        particle_vectors[5],   # coeff
-        particle_vectors[6],   # temp_z
-        particle_vectors[7],   # temp_ΔE
-        particle_vectors[8],   # temp_ϕ
-        bin_vectors[1],        # WF_temp
-        bin_vectors[2],        # λ
-        complex_vectors[1],    # convol
-        particle_vectors[9],   # ϕ
-        random_buffer,         # random_buffer
-        bin_vectors[3],        # normalized_λ
-        complex_vectors[2],    # fft_buffer1
-        complex_vectors[3],    # fft_buffer2
-        real_buffer,           # real_buffer
-        bin_counts,            # bin_counts
-        thread_local_buffers   # thread_local_buffers
+        particle_vectors[1],   # WF (n_local size) - Is WF actually used per particle? Maybe remove or resize.
+        particle_vectors[2],   # potential (n_local size) - For applying kick locally
+        particle_vectors[3],   # Δγ (n_local size)
+        particle_vectors[4],   # η (n_local size)
+        particle_vectors[5],   # coeff (n_local size)
+        particle_vectors[6],   # temp_z (n_local size)
+        particle_vectors[7],   # temp_ΔE (n_local size)
+        particle_vectors[8],   # temp_ϕ (n_local size)
+        bin_vectors[1],        # WF_temp (nbins size)
+        bin_vectors[2],        # λ (nbins size) - For global lambda
+        complex_vectors[1],    # convol (power_2_length size)
+        particle_vectors[9],   # ϕ (n_local size)
+        random_buffer,         # random_buffer (n_local size)
+        bin_vectors[3],        # normalized_λ (nbins size)
+        complex_vectors[2],    # fft_buffer1 (power_2_length size)
+        complex_vectors[3],    # fft_buffer2 (power_2_length size)
+        real_buffer,           # real_buffer (power_2_length size)
+        bin_counts,            # bin_counts (nbins size) - For local histogram
+        thread_local_buffers,  # thread_local_buffers (sized based on n_local)
+        # --- Add new buffers ---
+        global_bin_counts,                 # Buffer for summed histogram counts
+        potential_values_at_centers_global # Buffer for broadcasted potential grid
     )
 end
 

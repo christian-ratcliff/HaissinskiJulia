@@ -43,7 +43,7 @@ end;
 
 
 begin
-    n_turns::Int = 100
+    n_turns = Int64(1e3)
     # Create simulation parameters
     sim_params = SimulationParameters(
         E0_ini,      # E0
@@ -65,7 +65,7 @@ begin
     # Generate particles
     n_particles = Int64(1e5);
     particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);
-    buffers = create_simulation_buffers(n_particles, Int(n_particles/10), Float64);
+    buffers = create_simulation_buffers(n_particles, Int(n_particles/100), Float64);
     # Run simulation
     σ_E_final, σ_z_final, E0_final = longitudinal_evolve!(particles, sim_params, buffers; show_progress=false);
     particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);

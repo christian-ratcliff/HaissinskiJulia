@@ -6,7 +6,8 @@ mkdir -p slurm/err slurm/out slurm/scripts
 # Define parameter combinations
 THREADS=(1 2 4 8 16 32 64 96 128 192)
 TURNS=(1e2 1e3 1e4)
-PARTICLES=(1e5 1e6 1e7)
+PARTICLES=(1e5 1e6 1e7 1e8)
+
 
 
 # Create log directories if they don't exist
@@ -46,7 +47,7 @@ tmp_script="tests/tmp_script_${job_name}.jl"
 cp tests/benchmarks.jl \$tmp_script
 
 # Replace n_turns and n_particles with the specific values
-sed -i "s/n_turns = [0-9]*\|n_turns = [0-9.]\+e[0-9]\+/n_turns = ${turn}/g" \$tmp_script
+sed -i "s/n_turns[[:space:]]*=[[:space:]]*Int64([^)]*)/n_turns = Int64(${turn})/g" \$tmp_script
 sed -i "s/n_particles = Int64([0-9.]\+e[0-9]\+)/n_particles = Int64(${particle})/g" \$tmp_script
 
 # Run Julia with the specified number of threads
