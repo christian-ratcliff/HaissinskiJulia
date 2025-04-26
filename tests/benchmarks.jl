@@ -1,11 +1,20 @@
 include("../src/StochasticHaissinski.jl")
 
+
 begin
     using .StochasticHaissinski
     using BenchmarkTools
     using Statistics
     using LIKWID
+    using Dates
+    using Base.Threads
+    using Printf
+
+    num_threads = Threads.nthreads()
 end
+log_dir = joinpath(dirname(@__FILE__), "..", "logs/initial")
+mkpath(log_dir)
+parameters = Dict{String, Any}()
 
 begin
     E0_ini = 4e9
@@ -34,7 +43,7 @@ end;
 
 
 begin
-    n_turns = 100
+    n_turns::Int = 100
     # Create simulation parameters
     sim_params = SimulationParameters(
         E0_ini,      # E0
@@ -46,7 +55,7 @@ begin
         α_c,         # α_c
         ϕs,          # ϕs
         freq_rf,     # freq_rf
-        n_turns,       # n_turns
+        n_turns,     # n_turns
         true,        # use_wakefield
         true,        # update_η
         true,        # update_E0
@@ -62,31 +71,130 @@ begin
     particles, σ_E, σ_z, E0 = generate_particles(μ_z, μ_E, σ_z0, σ_E0, n_particles, E0_ini, mass, ϕs, freq_rf);
 end;
 
-@btime longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
-#  128.272 ms (7937 allocations: 43.20 MiB)  1e5 particles, 1e2 turns, less allcoaations, slightly longer, much more memory
-
-#current: 209.533 ms (6990 allocations: 189.88 MiB)  1e5 particles, 1e2 turns
-benchmark_results = @benchmark longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
-display(benchmark_results)
-# BenchmarkTools.Trial: 34 samples with 1 evaluation per sample.
-#  Range (min … max):  130.563 ms … 199.680 ms  ┊ GC (min … max): 0.60% … 0.81%
-#  Time  (median):     143.747 ms               ┊ GC (median):    0.43%
-#  Time  (mean ± σ):   147.825 ms ±  18.484 ms  ┊ GC (mean ± σ):  0.44% ± 0.12%
-#  Memory estimate: 43.20 MiB, allocs estimate: 7937.
-
-metrics, events = @perfmon "FLOPS_DP" begin
-    longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
+begin
+    # Capture all parameters
+    parameters["E0_ini"] = E0_ini
+    parameters["mass"] = mass
+    parameters["voltage"] = voltage
+    parameters["harmonic"] = harmonic
+    parameters["radius"] = radius
+    parameters["pipe_radius"] = pipe_radius
+    parameters["α_c"] = α_c
+    parameters["γ"] = γ
+    parameters["β"] = β
+    parameters["η"] = η
+    parameters["sin_ϕs"] = sin_ϕs
+    parameters["ϕs"] = ϕs
+    parameters["freq_rf"] = freq_rf
+    parameters["μ_z"] = μ_z
+    parameters["μ_E"] = μ_E
+    parameters["ω_rev"] = ω_rev
+    parameters["σ_E0"] = σ_E0
+    parameters["σ_z0"] = σ_z0
+    parameters["n_turns"] = n_turns
+    parameters["n_particles"] = n_particles
+    parameters["num_threads"] = num_threads
+    
+    turns_raw = @sprintf("%.0e", Float64(n_turns))
+    particles_raw = @sprintf("%.0e", Float64(n_particles))
+    
+    # Remove decimal point, plus sign, and leading zeros in exponent with multiple replacements
+    turns_sci = turns_raw
+    turns_sci = replace(turns_sci, "." => "")  # Remove decimal point
+    turns_sci = replace(turns_sci, "e+" => "e") # Remove plus sign
+    turns_sci = replace(turns_sci, r"e0+" => "e") # Remove leading zeros in exponent
+    
+    particles_sci = particles_raw
+    particles_sci = replace(particles_sci, "." => "")  # Remove decimal point
+    particles_sci = replace(particles_sci, "e+" => "e") # Remove plus sign
+    particles_sci = replace(particles_sci, r"e0+" => "e") # Remove leading zeros in exponent
+    
+    # Create log filename with scientific notation
+    log_filename = "turns$(turns_sci)_particles$(particles_sci)_threads$(num_threads).log"
+    log_path = joinpath(log_dir, log_filename)
+    
+    # Open log file
+    log_file = open(log_path, "w")
+    
+    # Write header and parameters to log file
+    write(log_file, "=== Simulation Log ===\n")
+    write(log_file, "Date: $(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))\n\n")
+    write(log_file, "=== Parameters ===\n")
+    
+    # Write all parameters to the log file
+    param_names = ["E0_ini", "mass", "voltage", "harmonic", "radius", "pipe_radius", 
+                  "α_c", "γ", "β", "η", "sin_ϕs", "ϕs", "freq_rf", "μ_z", "μ_E", 
+                  "ω_rev", "σ_E0", "σ_z0", "n_turns", "n_particles", "num_threads"]
+    
+    for name in param_names
+        value = eval(Symbol(name))
+        write(log_file, "$name = $value\n")
+    end
+    
+    write(log_file, "\n=== Simulation Output ===\n")
+    
+    # Function to log output to file only (not terminal)
+    function log_output(args...)
+        msg = string(args...)
+        write(log_file, msg, "\n")
+        flush(log_file)
+    end
 end
+
+
+
+# @btime longitudinal_evolve!($particles, $sim_params, $buffers; $show_progress=false)
+benchmark_results = @benchmark longitudinal_evolve!($particles, $sim_params, $buffers; show_progress=false)
+filtered_results = median(benchmark_results)
+io = IOBuffer()
+show(io, MIME("text/plain"), filtered_results)
+benchmark_details = String(take!(io))
+log_output("Benchmark results (median):\n", benchmark_details)
+
+
+
+
+# metrics, events = @perfmon "FLOPS_DP" begin
+#     longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
+# end ;
+# Create a temporary file for capturing the LIKWID output
+temp_file = tempname()
+open(temp_file, "w") do temp_io
+    # Redirect stdout to the temporary file
+    old_stdout = stdout
+    redirect_stdout(temp_io)
+    
+    # Run the performance monitoring
+    global metrics, events = @perfmon "FLOPS_DP" begin
+        longitudinal_evolve!(particles, sim_params, buffers; show_progress=false)
+    end
+    
+    # Restore stdout
+    redirect_stdout(old_stdout)
+end
+
+# Read the captured output
+perfmon_output = read(temp_file, String)
+log_output("Performance monitoring results:\n", perfmon_output)
+
+# Clean up the temporary file
+rm(temp_file)
 
 # Display FLOP count
 flop_count = first(events["FLOPS_DP"])["RETIRED_SSE_AVX_FLOPS_ALL"]
-println("Total FLOPs: ", flop_count)
+log_output("Total FLOPs: ", flop_count)
 
 # Calculate GFLOPS rate
 execution_time = median(benchmark_results.times) / 1e9  # Convert ns to seconds
 gflops_rate = flop_count / execution_time / 1e9
-println("GFLOPS rate: ", gflops_rate)
+log_output("GFLOPS rate: ", gflops_rate)
 
 # You can also calculate FLOPs per particle per turn
 flops_per_particle_per_turn = flop_count / n_particles / n_turns
-println("FLOPs per particle per turn: ", flops_per_particle_per_turn)
+log_output("FLOPs per particle per turn: ", flops_per_particle_per_turn)
+
+# Close the log file
+close(log_file)
+
+# Print just a simple completion message to the terminal
+println("Simulation complete. Results logged to: ", log_path)

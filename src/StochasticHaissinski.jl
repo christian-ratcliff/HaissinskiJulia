@@ -20,7 +20,7 @@ using FFTW
 using Interpolations
 using ProgressMeter
 using FHist
-using Plots
+# using Plots
 using LaTeXStrings
 
 # Include submodules

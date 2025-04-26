@@ -10,3 +10,10 @@ StochasHaissinski.jl
 Rewrite2.jl
 old
 tree
+
+hpcc_setup.sh
+combine.sh
+combined_output.txt
+
+logs
+slurm
