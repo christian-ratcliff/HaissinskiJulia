@@ -7,7 +7,12 @@ MAX_CORES=512
 PROCESSES=(1 2 4 8 16 32 64 128 256 512)  # Number of MPI processes
 THREADS=(1 2 4 8 16 32 64 128 256 512)    # Number of threads per process
 TURNS=(1e2 1e3 1e4)
-PARTICLES=(1e5 1e6 1e7 1e8)
+PARTICLES=(1e5 1e6 1e7)
+
+# PROCESSES=(1)  # Number of MPI processes
+# THREADS=(1)    # Number of threads per process
+# TURNS=(1e1)
+# PARTICLES=(1e5)
 
 
 # Create log directories if they don't exist
@@ -42,7 +47,7 @@ for proc in "${PROCESSES[@]}"; do
 
 module purge
 # Load any necessary modules here
-module load Julia
+module load Julia/1.9.3-linux-x86_64
 module load likwid
 module load OpenMPI
 

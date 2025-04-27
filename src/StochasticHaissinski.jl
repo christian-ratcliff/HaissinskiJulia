@@ -53,7 +53,7 @@ export generate_particles, longitudinal_evolve!
 export quantum_excitation!, synchrotron_radiation!, apply_wakefield_inplace!, rf_kick!, synchrotron_radiation!
 
 # Export utilities
-export z_to_ϕ, ϕ_to_z, calc_rf_factor, create_simulation_buffers,copyto_particles!, next_power_of_two
+export z_to_ϕ, ϕ_to_z, calc_rf_factor, create_simulation_buffers,copyto_particles!, next_power_of_two, initialize_mpi_buffers!, free_mpi_buffer!, precompute_thread_chunks!
 
 # Export parameter sensitivity
 export VoltageTransform, AlphaCompactionTransform, HarmonicNumberTransform, PipeRadiusTransform, ParameterTransformation, apply_transform, compute_fom, ParameterSensitivity

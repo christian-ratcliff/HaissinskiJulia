@@ -3,10 +3,13 @@
 # Supports serial and MPI execution modes selected via command-line argument.
 
 # Determine the base path relative to the script's location
+
 script_dir = dirname(@__FILE__)
 project_root = joinpath(script_dir, "..")
 src_path = joinpath(project_root, "src", "StochasticHaissinski.jl")
 include(src_path)
+
+# include("../src/StochasticHaissinski.jl")
 
 using .StochasticHaissinski
 using BenchmarkTools
@@ -18,6 +21,7 @@ using Printf
 using Random
 using StructArrays
 using MPI
+using Profile, ProfileSVG
 
 function parse_command_args()
     parsed_args = Dict{String, Any}()
@@ -263,7 +267,7 @@ pre_params = SimulationParameters( E0, mass, voltage, harmonic, radius, pipe_rad
 # Use deepcopy to avoid modifying original data/buffers during compilation run
 particles_copy = deepcopy(particles); buffers_copy = deepcopy(buffers)
 # Call evolve with the correct flag
-StochasticHaissinski.longitudinal_evolve!(particles_copy, pre_params, buffers_copy, comm, run_mpi_flag; show_progress=false);
+StochasticHaissinski.longitudinal_evolve!(particles_copy, pre_params, buffers_copy, comm, run_mpi_flag);
 if run_mpi_flag; MPI.Barrier(comm); end # Sync after compilation run
 if rank == 0; println("Compilation run finished."); end
 
@@ -339,7 +343,7 @@ particles_bench = deepcopy(particles); buffers_bench = deepcopy(buffers)
 bench_sim_params = sim_params # Parameters are immutable
 
 # Define the benchmarkable expression
-bench_run = @benchmarkable StochasticHaissinski.longitudinal_evolve!($particles_bench, $bench_sim_params, $buffers_bench, $comm, $run_mpi_flag; show_progress=false) setup=(
+bench_run = @benchmarkable StochasticHaissinski.longitudinal_evolve!($particles_bench, $bench_sim_params, $buffers_bench, $comm, $run_mpi_flag) setup=(
     # Create fresh copies for this sample evaluation
     particles_bench = deepcopy($particles);
     buffers_bench = deepcopy($buffers);
@@ -417,7 +421,7 @@ try
 
     # Run the code block under LIKWID monitoring
     _, events = @perfmon "FLOPS_DP" begin
-        StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag; show_progress=false)
+        StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag)
     end
 
 
@@ -514,6 +518,7 @@ if rank == 0 && @isdefined(log_output)
     log_output("-"^20)
 end # End Rank 0 LIKWID processing
 
+
 # --- Final Cleanup ---
 if rank == 0
     # Close the log file if it was successfully opened
@@ -530,9 +535,40 @@ if rank == 0
     end
 end
 
+# if MPI.Comm_rank(MPI.COMM_WORLD) == 0
+    # @profile begin
+    #     # Run the function ONCE to collect profile data
+    #     StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag; show_progress=false)
+    # end
+    # println("Rank 0: Profile data collected. Saving SVG...")
+    # ProfileSVG.save("prof.svg")
+#     Profile.Allocs.@profile sample_rate=0.01 StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag; show_progress=false)
+#     results = Profile.Allocs.fetch()
+#     allocs_sorted = sort(results.allocs, by=x->x.size, rev=true) # Sort descending
+
+#     num_to_show = 10 # How many of the top allocations to display
+#     println("\nTop $(min(num_to_show, length(allocs_sorted))) allocations by size:")
+#     for i in 1:min(num_to_show, length(allocs_sorted))
+#         alloc = allocs_sorted[i]
+#         # Print type, size, and maybe the first few frames of the stack trace
+#         println("  #$i: Size=$(alloc.size), Type=$(alloc.type)")
+#         # Optional: Print top of stack trace (can be long)
+#         println("      Stacktrace (top):")
+#         for j in 1:min(25, length(alloc.stacktrace)) # Show top 5 frames
+#             println("        - $(alloc.stacktrace[j])")
+#         end
+#         if length(alloc.stacktrace) > 5
+#             println("        - ... (and $(length(alloc.stacktrace)-5) more)")
+#         end
+#     end
+# end
+
+
+
 # Finalize MPI 
 if run_mpi_flag && MPI.Initialized() && !MPI.Finalized()
     # Add a barrier before finalizing to ensure all ranks are ready
     MPI.Barrier(comm)
     MPI.Finalize()
 end
+

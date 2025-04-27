@@ -16,7 +16,8 @@ using Distributions
 using ProgressMeter
 using LoopVectorization
 using MPI # Needed for MPI operations
-using LinearAlgebra # For I in generate_particles
+using LinearAlgebra 
+
 
 
 # --- Particle Generation (Common function, used differently in serial/MPI) ---
@@ -207,8 +208,7 @@ function longitudinal_evolve!(
     params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
     buffers::SimulationBuffers{T},
     comm::Union{MPI.Comm, Nothing}, # MPI communicator or nothing
-    use_mpi::Bool; # Flag for mode selection
-    show_progress::Bool = true
+    use_mpi::Bool # Flag for mode selection
     ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF}
 
     # --- MPI Setup ---
@@ -245,8 +245,8 @@ function longitudinal_evolve!(
     local σ_E0_initial::T
     local σ_z0_initial::T
     if use_mpi
-        σ_E0_initial = compute_global_std(particles.coordinates.ΔE, comm)
-        σ_z0_initial = compute_global_std(particles.coordinates.z, comm)
+        σ_E0_initial = compute_global_std(particles.coordinates.ΔE, comm, buffers)
+        σ_z0_initial = compute_global_std(particles.coordinates.z, comm, buffers)
     else
         σ_E0_initial = compute_std(particles.coordinates.ΔE) # Use local std for serial
         σ_z0_initial = compute_std(particles.coordinates.z)
@@ -256,19 +256,22 @@ function longitudinal_evolve!(
     # Bin edges and wake constants depend on initial GLOBAL properties (sigma_z)
     # Need sigma_z0_initial (which is global in MPI mode)
     local bin_edges::AbstractRange{T} = 1.0:2.0 # Default initialization
+    local bin_centers::AbstractRange{T} = (bin_edges[1:end-1] + bin_edges[2:end]) ./ 2
     local wake_factor_val::T = 0.0; local wake_sqrt_val::T = 0.0; local cτ::T = 0.0
     if use_wakefield
         # Determine nbins from buffers (consistent across ranks)
-        nbins::Int = length(buffers.λ) # e.g., length of WF_temp, λ etc.
+        nbins::Int = length(buffers.λ) 
         if nbins <= 0; error("Buffer nbins invalid (must be > 0)."); end
-
+        power_2_length = next_power_of_two(nbins * 2)
+        # buffers.mpi_buffers = Dict{Symbol, Any}() # Initialize
+        initialize_mpi_buffers!(buffers, comm_size, comm, power_2_length)
         # Define bin edges based on initial spread (use sigma_z0_initial)
         # Ensure range covers sufficient extent, e.g., +/- 7.5 sigma
         z_width = 7.5 * σ_z0_initial
         # Handle case where sigma_z is zero or very small
         if z_width < 1e-9; z_width = 1e-6; end # Use a minimum extent
         bin_edges = range(-z_width, z_width, length=nbins+1)
-
+        bin_centers = (bin_edges[1:end-1] + bin_edges[2:end]) ./ 2
         # Wake function parameters
         kp=T(3e1); Z0=T(120π); cτ=T(4e-3);
         if cτ <= 0; error("Wake parameter cτ must be positive."); end
@@ -278,14 +281,15 @@ function longitudinal_evolve!(
     end
 
     # --- Progress Meter (Only Rank 0) ---
-    local p::Union{Progress, Nothing} = nothing
-    if rank == 0 && show_progress
-        p = Progress(n_turns, desc="Simulating Turns ($(use_mpi ? "MPI" : "Serial")): ")
-    end
+    # local p::Union{Progress, Nothing} = nothing
+    # if rank == 0 && show_progress
+    #     p = Progress(n_turns, desc="Simulating Turns ($(use_mpi ? "MPI" : "Serial")): ")
+    # end
 
     # --- Buffer for initial ΔE this turn (needed for E0 update) ---
     # Allocate only if E0 update is enabled, size is n_local
-    ΔE_initial_turn = update_E0_flag ? Vector{T}(undef, n_local) : Vector{T}()
+    # ΔE_initial_turn = update_E0_flag ? Vector{T}(undef, n_local) : Vector{T}()
+    ΔE_initial_turn = view(buffers.ΔE_initial_turn, 1:n_local)
 
     # --- Main Evolution Loop ---
     for turn in 1:n_turns
@@ -306,7 +310,7 @@ function longitudinal_evolve!(
 
         # --- RF Kick (Local) ---
         if n_local > 0
-            StochasticHaissinski.rf_kick!(voltage, sin_ϕs, rf_factor, ϕs, particles)
+            StochasticHaissinski.rf_kick!(voltage, sin_ϕs, rf_factor, ϕs, particles, buffers)
         end
 
         # --- Quantum Excitation (Local) ---
@@ -317,7 +321,7 @@ function longitudinal_evolve!(
 
         # --- SR Damping (Local) ---
         if SR_damping && n_local > 0
-            StochasticHaissinski.synchrotron_radiation!(E0, radius, particles)
+            StochasticHaissinski.synchrotron_radiation!(E0, radius, particles, buffers)
         end
 
         # --- Phase Advance (Local) ---
@@ -350,9 +354,12 @@ function longitudinal_evolve!(
 
             if use_mpi
                  # Need current GLOBAL sigma_z for smoothing and current calculation
-                 current_sigma_z_for_wake = compute_global_std(particles.coordinates.z, comm)
+                 current_sigma_z_for_wake = compute_global_std(particles.coordinates.z, comm, buffers)
                  # Need GLOBAL particle count
-                 n_particles_global = MPI.Allreduce(n_local, MPI.SUM, comm)
+                #  n_particles_global = MPI.Allreduce(n_local, MPI.SUM, comm)
+                buffers.allreduce_single[1] = T(n_local)
+                MPI.Allreduce!(buffers.allreduce_single, MPI.SUM, comm)
+                n_particles_global = Int(round(buffers.allreduce_single[1]))
             else
                  # In serial mode, local sigma_z is the global sigma_z
                  current_sigma_z_for_wake = compute_std(particles.coordinates.z)
@@ -384,7 +391,7 @@ function longitudinal_evolve!(
                 particles, buffers,
                 wake_factor_val, wake_sqrt_val, cτ, current_wake_current,
                 current_sigma_z_for_wake, 
-                bin_edges,
+                bin_edges, bin_centers,
                 comm, use_mpi # Pass MPI info
             )
             # This modifies local ΔE based on wake potential
@@ -405,9 +412,15 @@ function longitudinal_evolve!(
                 end
 
                 # Reduce sum of changes and local counts globally
-                reductions = MPI.Allreduce([sum_dE_local, T(n_local)], MPI.SUM, comm)
-                sum_dE_global = reductions[1]
-                n_global_count = Int(round(reductions[2]))
+                # reductions = MPI.Allreduce([sum_dE_local, T(n_local)], MPI.SUM, comm)
+                # sum_dE_global = reductions[1]
+                # n_global_count = Int(round(reductions[2]))
+
+                buffers.allreduce_energy[1] = sum_dE_local
+                buffers.allreduce_energy[2] = T(n_local)
+                MPI.Allreduce!(buffers.allreduce_energy, MPI.SUM, comm)
+                sum_dE_global = buffers.allreduce_energy[1]
+                n_global_count = Int(round(buffers.allreduce_energy[2]))
 
                 # Calculate global mean energy change for this turn
                 mean_dE_this_turn = sum_dE_global / n_global_count 
@@ -438,7 +451,7 @@ function longitudinal_evolve!(
         end # End E0 update block
 
         # --- Update Progress Meter (Rank 0) ---
-        if rank == 0 && show_progress && p !== nothing; next!(p); end
+        # if rank == 0 && show_progress && p !== nothing; next!(p); end
 
     end # End turn loop
 
@@ -446,8 +459,8 @@ function longitudinal_evolve!(
     local σ_E_final::T
     local σ_z_final::T
     if use_mpi
-        σ_E_final = compute_global_std(particles.coordinates.ΔE, comm)
-        σ_z_final = compute_global_std(particles.coordinates.z, comm)
+        σ_E_final = compute_global_std(particles.coordinates.ΔE, comm, buffers)
+        σ_z_final = compute_global_std(particles.coordinates.z, comm, buffers)
     else
         σ_E_final = compute_std(particles.coordinates.ΔE)
         σ_z_final = compute_std(particles.coordinates.z)

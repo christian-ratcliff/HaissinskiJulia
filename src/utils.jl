@@ -56,10 +56,10 @@ end
 Calculate a Gaussian kernel value for smoothing. Avoids singularity at σ=0.
 """
 @inline function delta(x::T, σ::T)::T where T<:Float64
-    if σ <= 0
-        # Return a very narrow spike approximation if sigma is non-positive
-        return abs(x) < eps(T) ? T(1.0 / (sqrt(2 * π) * eps(T))) : zero(T)
-    end
+    # if σ <= 0
+    #     # Return a very narrow spike approximation if sigma is non-positive
+    #     return abs(x) < eps(T) ? T(1.0 / (sqrt(2 * π) * eps(T))) : zero(T)
+    # end
     σ_inv_sqrt2pi = 1 / (sqrt(2 * π) * σ)
     exp_factor = -0.5 / (σ * σ)
     return σ_inv_sqrt2pi * exp(x * x * exp_factor)
@@ -173,6 +173,10 @@ function create_simulation_buffers(
     _temp_ϕ = Vector{T}(undef, n_particles)
     _ϕ = Vector{T}(undef, n_particles)
     _random_buffer = Vector{T}(undef, n_particles)
+    _ΔE_initial_turn = Vector{T}(undef, n_particles)
+    _mpi_fft_W = Vector{Complex{T}}(undef, n_particles)
+    _mpi_fft_L = Vector{Complex{T}}(undef, n_particles)
+    _mpi_convol_freq = Vector{Complex{T}}(undef, n_particles)
 
     # Allocate bin-sized buffers (global property)
     _WF_temp = Vector{T}(undef, nbins)
@@ -185,11 +189,20 @@ function create_simulation_buffers(
     _fft_buffer1 = Vector{Complex{T}}(undef, power_2_length)
     _fft_buffer2 = Vector{Complex{T}}(undef, power_2_length)
     _real_buffer = Vector{T}(undef, power_2_length)
-    
+
+    # Create and store FFT plans 
+    _fft_plans = Dict{Symbol, Any}()
+    _fft_plans[:fft_plan1] = plan_fft!(_fft_buffer1; flags=FFTW.PATIENT)
+    _fft_plans[:fft_plan2] = plan_fft!(_fft_buffer2; flags=FFTW.PATIENT) 
+    _fft_plans[:ifft_plan] = plan_ifft!(_convol; flags=FFTW.PATIENT)
+
+    _interp_indices = Vector{Int}(undef, n_particles)
+    _interp_weights = Vector{T}(undef, n_particles)
 
     # Allocate MPI-specific buffers (global property)
     # These are allocated even in serial mode but will be unused.
     _global_bin_counts = Vector{Int}(undef, nbins)
+    _normalized_global_amounts = Vector{T}(undef, nbins)
     _potential_values_at_centers_global = Vector{T}(undef, nbins)
 
     # Thread-local storage (useful for serial or threaded loops within MPI rank)
@@ -203,16 +216,40 @@ function create_simulation_buffers(
         _thread_local_buffers[i] = Dict{Symbol, Any}(
             # Example: size based on particles handled by this rank
              :temp_array => Vector{T}(undef, local_chunk_size_per_thread)
-             # Add other thread-local buffers as needed by threaded sections
         )
     end
 
+    _scatterv_displs = Vector{Int}(undef, comm_size)
+    _scatterv_counts = Vector{Int}(undef, comm_size)
+
+    # Pre-allocate buffers for common MPI Allreduce operations
+    _allreduce_energy = Vector{T}(undef, 2)  # For [sum_dE, n_local]
+    _allreduce_stats = Vector{T}(undef, 3)   # For [sum, sum_sq, count]
+    _allreduce_single = Vector{T}(undef, 1)  # For single value reductions
+    
+    # Initialize MPI buffers dictionary
+    _mpi_buffers = Dict{Symbol, Any}()
+
+    n_threads = Threads.nthreads()
+    chunk_size = max(1, n_particles ÷ n_threads)
+    _thread_chunks = Vector{UnitRange{Int}}(undef, n_threads)
+    
+    # Pre-compute chunk ranges for each thread
+    for i in 1:n_threads
+        chunk_start = (i-1) * chunk_size + 1
+        chunk_end = min(i * chunk_size, n_particles)
+        _thread_chunks[i] = chunk_start:chunk_end
+    end
+
     return SimulationBuffers{T}(
-        _WF, _potential, _Δγ, _η, _coeff, _temp_z, _temp_ΔE, _temp_ϕ, _ϕ, _random_buffer,
+        _WF, _potential, _Δγ, _η, _coeff, _temp_z, _temp_ΔE, _temp_ϕ, _ϕ, _random_buffer,_ΔE_initial_turn, _mpi_fft_W, _mpi_fft_L, _mpi_convol_freq,
         _WF_temp, _λ, _normalized_λ, _bin_counts,
         _convol, _fft_buffer1, _fft_buffer2, _real_buffer,
         _thread_local_buffers,
-        _global_bin_counts, _potential_values_at_centers_global
+        _global_bin_counts,_normalized_global_amounts, _potential_values_at_centers_global, _fft_plans, _interp_indices, _interp_weights,
+        _scatterv_counts, _scatterv_displs,
+        _mpi_buffers, _allreduce_energy, _allreduce_stats, _allreduce_single,
+        _thread_chunks
     )
 end
 
@@ -316,28 +353,50 @@ function calculate_local_histogram!(
     bin_edges::AbstractRange,
     local_bin_counts::Vector{Int} # Output buffer for local counts
 ) where T<:Float64
-    # This function is identical in implementation to calculate_histogram!
-    # Kept separate name for clarity in MPI wakefield code path.
     fill!(local_bin_counts, 0)
     nbins = length(local_bin_counts)
+    # This function is identical in implementation to calculate_histogram!
+    # Kept separate name for clarity in MPI wakefield code path.
+    # --- Assertions and Setup ---
     if length(bin_edges) != nbins + 1
-         error("Mismatch between bin_edges length ($(length(bin_edges))) and local_bin_counts length ($nbins)")
+        error("Mismatch between bin_edges length ($(length(bin_edges))) and local_bin_counts length ($nbins)")
     end
-
     if isempty(local_data); return nothing; end
-    first_edge = bin_edges[1]
-    last_edge = bin_edges[end]
 
-    @inbounds for val in local_data
-        if val >= first_edge && val < last_edge
-            bin_idx = searchsortedfirst(bin_edges, val) - 1
-            if bin_idx >= 1 && bin_idx <= nbins
-                 local_bin_counts[bin_idx] += 1
-            end
-        elseif val == last_edge
-             local_bin_counts[nbins] += 1
-        end
+    # Precompute for uniform bins
+    first_edge = first(bin_edges)
+    last_edge = last(bin_edges) # Use last() for ranges - more robust
+    bin_step = step(bin_edges)
+
+    # Check for zero step to avoid division by zero
+    if bin_step == 0 && nbins > 0
+         error("Bin edges have zero step size.")
+    elseif bin_step == 0 && nbins == 0 # Special case: no bins, nothing to do
+        return nothing
     end
+
+    inv_bin_step = T(1.0 / bin_step) # Ensure type matches T
+    first_edge_T = T(first_edge)     # Ensure type matches T
+    last_edge_T = T(last_edge)       # Ensure type matches T
+    nbins_Int = Int(nbins)           # Ensure it's Int for clamp
+
+    # --- Main Loop with @turbo ---
+    @turbo for i in 1:length(local_data)
+        # 1. Calculate the condition (yields true or false)
+        # Use '&' which can sometimes be better for SIMD masks
+        in_range = (local_data[i] >= first_edge_T) & (local_data[i] <= last_edge_T)
+
+        # 2. Calculate the potential bin index. Clamp handles edge cases.
+        # This calculation happens even if out of range, but the result
+        # is only used if in_range is true.
+        bin_idx_float = (local_data[i] - first_edge_T) * inv_bin_step
+        # Clamp takes Int bounds usually
+        bin_idx = clamp(floor(Int, bin_idx_float) + 1, 1, nbins_Int)
+
+
+        @inbounds local_bin_counts[bin_idx] += in_range
+    end
+
     return nothing
 end
 
@@ -353,7 +412,8 @@ function in_place_convolution!(
     g::AbstractVector{T},       # Input signal 2 (e.g., smoothed lambda)
     power_2_length::Int,
     fft_buffer1::Vector{Complex{T}}, # Workspace buffer 1
-    fft_buffer2::Vector{Complex{T}}  # Workspace buffer 2
+    fft_buffer2::Vector{Complex{T}},  # Workspace buffer 2
+    buffers::SimulationBuffers{T}
 ) where T<:Float64
 
     n_f = length(f)
@@ -376,11 +436,9 @@ function in_place_convolution!(
     end
 
     # In-place FFTs
-    # Note: Creating plans repeatedly is inefficient; ideally plan once outside the loop
-    plan_fft_1 = plan_fft!(fft_buffer1)
-    plan_fft_2 = plan_fft!(fft_buffer2)
-    plan_fft_1 * fft_buffer1
-    plan_fft_2 * fft_buffer2
+    # Use pre-computed plans instead of creating new ones
+    buffers.fft_plans[:fft_plan1] * fft_buffer1
+    buffers.fft_plans[:fft_plan2] * fft_buffer2
 
     # Element-wise multiplication (store result in fft_buffer1)
     @inbounds for i in 1:power_2_length
@@ -388,8 +446,7 @@ function in_place_convolution!(
     end
 
     # In-place IFFT (result in fft_buffer1)
-    plan_ifft_1 = plan_ifft!(fft_buffer1)
-    plan_ifft_1 * fft_buffer1
+    buffers.fft_plans[:ifft_plan] * fft_buffer1
 
     # Copy result to the designated output buffer
     copyto!(result, 1, fft_buffer1, 1, power_2_length)
@@ -509,7 +566,7 @@ end
 # --- MPI Statistical Helpers ---
 
 """ Calculate global standard deviation via MPI Allreduce """
-function compute_global_std(local_data::AbstractVector{T}, comm::MPI.Comm) where T<:Float64
+function compute_global_std(local_data::AbstractVector{T}, comm::MPI.Comm, buffers::SimulationBuffers{T},) where T<:Float64
     n_local = length(local_data)
     sum_local = zero(T)
     sum_sq_local = zero(T)
@@ -523,11 +580,15 @@ function compute_global_std(local_data::AbstractVector{T}, comm::MPI.Comm) where
         end
     end
 
-    # Perform Allreduce to get global sums and total count
-    sums_and_count = MPI.Allreduce([sum_local, sum_sq_local, T(n_local)], MPI.SUM, comm)
-    sum_global = sums_and_count[1]
-    sum_sq_global = sums_and_count[2]
-    n_global = Int(round(sums_and_count[3])) # Total number of particles
+    # Use pre-allocated buffer instead of creating a new array
+    buffers.allreduce_stats[1] = sum_local
+    buffers.allreduce_stats[2] = sum_sq_local
+    buffers.allreduce_stats[3] = T(n_local)
+    MPI.Allreduce!(buffers.allreduce_stats, MPI.SUM, comm)
+    
+    sum_global = buffers.allreduce_stats[1]
+    sum_sq_global = buffers.allreduce_stats[2]
+    n_global = Int(round(buffers.allreduce_stats[3]))
 
     # Calculate global standard deviation
     if n_global <= 1
@@ -555,10 +616,106 @@ function compute_global_mean(local_data::AbstractVector{T}, comm::MPI.Comm) wher
          end
      end
      # Reduce local sum and local count
-     sums_and_count = MPI.Allreduce([sum_local, T(n_local)], MPI.SUM, comm)
-     sum_global = sums_and_count[1]
-     n_global = Int(round(sums_and_count[2])) # Total count
+    buffers.allreduce_stats[1] = sum_local
+    # buffers.allreduce_stats[2] = sum_sq_local
+    buffers.allreduce_stats[3] = T(n_local)
+    MPI.Allreduce!(buffers.allreduce_stats, MPI.SUM, comm)
+    
+    sum_global = buffers.allreduce_stats[1]
+    # sum_sq_global = buffers.allreduce_stats[2]
+    n_global = Int(round(buffers.allreduce_stats[3]))
 
      # Calculate global mean, handle n_global = 0 case
      return n_global > 0 ? (sum_global / n_global) : zero(T)
+end
+
+
+"""
+    initialize_mpi_buffers!(
+        buffers::SimulationBuffers{T},
+        comm_size::Int,
+        comm::MPI.Comm,
+        power_2_length::Int
+    ) where T<:Float64
+
+Initialize pre-allocated MPI buffer objects to avoid per-turn allocations.
+Should be called once during simulation setup before the main simulation loop.
+"""
+function initialize_mpi_buffers!(
+    buffers::SimulationBuffers{T},
+    comm_size::Int,
+    comm::MPI.Comm,
+    power_2_length::Int
+) where T<:Float64
+    
+    # Get rank
+    rank = MPI.Comm_rank(comm)
+    
+    # Setup counts and displacements - these are already in buffers
+    # but we need to populate them
+    counts = buffers.scatterv_counts
+    displs = buffers.scatterv_displs
+    
+    # Compute counts and displacements for each rank
+    base_chunk_size = power_2_length ÷ comm_size
+    remainder = power_2_length % comm_size
+    current_displacement = 0
+    
+    for r in 0:(comm_size-1)
+        local_chunk = r < remainder ? base_chunk_size + 1 : base_chunk_size
+        counts[r+1] = local_chunk 
+        displs[r+1] = current_displacement
+        current_displacement += local_chunk
+    end
+    
+    # Get this rank's chunk size
+    chunk_size = counts[rank+1]
+    
+    # Create views for the local chunks
+    local_fft_W = view(buffers.mpi_fft_W, 1:chunk_size)
+    local_fft_L = view(buffers.mpi_fft_L, 1:chunk_size)
+    local_convol_freq = view(buffers.mpi_convol_freq, 1:chunk_size)
+    
+    # Create MPI buffer objects and store them in the mpi_buffers dictionary
+    # These will be reused in each turn
+    
+    # Receive buffers for all ranks
+    buffers.mpi_buffers[:rbuf_W] = MPI.Buffer(local_fft_W)
+    buffers.mpi_buffers[:rbuf_L] = MPI.Buffer(local_fft_L)
+    buffers.mpi_buffers[:sbuf_convol] = MPI.Buffer(local_convol_freq)
+    
+    # Send buffers only for rank 0
+    if rank == 0
+        buffers.mpi_buffers[:sbuf_W] = MPI.VBuffer(buffers.fft_buffer1, counts, displs) 
+        buffers.mpi_buffers[:sbuf_L] = MPI.VBuffer(buffers.fft_buffer2, counts, displs)
+        buffers.mpi_buffers[:rbuf_convol] = MPI.VBuffer(buffers.convol, counts, displs)
+    end
+    buffers.mpi_buffers[:initialized] = true
+    return nothing
+end
+
+function free_mpi_buffer!(buffer)
+    if buffer !== nothing
+        try
+            MPI.free(buffer)
+        catch e
+            # Handle error if needed
+        end
+        return nothing
+    end
+end
+
+function precompute_thread_chunks!(buffers::SimulationBuffers{T}, n_particles::Int) where T<:Float64
+    n_threads = Threads.nthreads()
+    chunk_size = max(1, n_particles ÷ n_threads)
+    
+    # Allocate once
+    buffers.thread_chunks = Vector{UnitRange{Int}}(undef, n_threads)
+    
+    # Calculate chunk ranges for each thread
+    for i in 1:n_threads
+        chunk_start = (i-1) * chunk_size + 1
+        chunk_end = min(i * chunk_size, n_particles)
+        buffers.thread_chunks[i] = chunk_start:chunk_end
+    end
 end

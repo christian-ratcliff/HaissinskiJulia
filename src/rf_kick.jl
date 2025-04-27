@@ -18,7 +18,8 @@ function rf_kick!(
     sin_ϕs,
     rf_factor,
     ϕs,
-    particles::StructArray{Particle{T}}
+    particles::StructArray{Particle{T}},
+    buffers::SimulationBuffers{T}
 ) where T<:Float64
     
     # # Check if voltage is a StochasticTriple
@@ -59,16 +60,30 @@ function rf_kick!(
     #     end
     # end
 
-    chunk_size = max(1, length(particles) ÷ Threads.nthreads())
+    # chunk_size = max(1, length(particles) ÷ Threads.nthreads())
         
-    Threads.@threads for chunk_start in 1:chunk_size:length(particles)
-        chunk_end = min(chunk_start + chunk_size - 1, length(particles))
+    # Threads.@threads for chunk_start in 1:chunk_size:length(particles)
+    #     chunk_end = min(chunk_start + chunk_size - 1, length(particles))
         
-        @turbo for i in chunk_start:chunk_end
-            ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
-            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-        end
+    #     @turbo for i in chunk_start:chunk_end
+    #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+    #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+    #     end
+    # end
+
+    # Threads.@threads for tid in 1:Threads.nthreads()
+    #     chunk_range = buffers.thread_chunks[tid]
+    #     @turbo for i in chunk_range
+    #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+    #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+    #     end
+    # end
+
+    @turbo for i in 1:length(particles.coordinates.z)
+        ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+        particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
     end
+
 
     
     return nothing

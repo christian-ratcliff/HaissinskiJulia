@@ -150,6 +150,10 @@ struct SimulationBuffers{T<:Float64}
     temp_ϕ::Vector{T}
     ϕ::Vector{T}
     random_buffer::Vector{T}
+    ΔE_initial_turn::Vector{T}
+    mpi_fft_W::Vector{Complex{T}}
+    mpi_fft_L::Vector{Complex{T}}
+    mpi_convol_freq::Vector{Complex{T}} 
 
     # Buffers sized based on nbins (global property)
     WF_temp::Vector{T}
@@ -162,11 +166,27 @@ struct SimulationBuffers{T<:Float64}
     fft_buffer1::Vector{Complex{T}}
     fft_buffer2::Vector{Complex{T}}
     real_buffer::Vector{T}       # For storing real parts
+    
 
     # Thread local storage (serial optimization)
     thread_local_buffers::Vector{Dict{Symbol, Any}}
 
     # MPI Specific Buffers (sized based on nbins)
     global_bin_counts::Vector{Int}          # For storing result of Allreduce
+    normalized_global_amounts::Vector{T}   
     potential_values_at_centers_global::Vector{T} # For receiving broadcasted potential grid
+    fft_plans::Dict{Symbol, Any}
+    interp_indices::Vector{Int}       # Pre-allocated indices buffer
+    interp_weights::Vector{T}         # Pre-allocated weights buffer
+
+    scatterv_counts::Vector{Int}
+    scatterv_displs::Vector{Int}
+
+    mpi_buffers::Dict{Symbol, Any}        # Store pre-allocated MPI buffer objects
+    allreduce_energy::Vector{T}           # For energy updates [sum_dE, count]
+    allreduce_stats::Vector{T}            # For statistics [sum, sum_sq, count]
+    allreduce_single::Vector{T}           # For single value reductions
+
+    thread_chunks::Vector{UnitRange{Int}}
+
 end
