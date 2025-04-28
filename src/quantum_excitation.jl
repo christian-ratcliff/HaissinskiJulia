@@ -33,7 +33,7 @@ function quantum_excitation!(
     # is_stochastic = (typeof(E0) <: StochasticTriple) || (typeof(radius) <: StochasticTriple)
     
     # Generate random values (reusing existing buffer)
-    randn!(MersenneTwister(Int(round(rand()*100))), buffers.random_buffer)
+    randn!(buffers.random_buffer)
     
     # if is_stochastic
     #     # Calculate excitation parameter - single propagate call
@@ -59,7 +59,14 @@ function quantum_excitation!(
     excitation = sqrt(1-(1-∂U_∂E)^2) * σ_E0
     
     # Apply kicks with loop
-    @turbo for i in 1:length(particles)
+    # Threads.@threads for tid in 1:Threads.nthreads()
+    #     chunk_range = buffers.thread_chunks[tid]
+    #     @turbo for i in chunk_range
+    #         particles.coordinates.ΔE[i] += excitation * buffers.random_buffer[i]
+    #     end
+    # end
+
+    @turbo for i in 1:length(particles.coordinates.z)
         particles.coordinates.ΔE[i] += excitation * buffers.random_buffer[i]
     end
     return nothing

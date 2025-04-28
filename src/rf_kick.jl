@@ -1,4 +1,6 @@
 using StochasticAD
+using ThreadsX
+using FLoops
 # using StochasticAD
 
 """
@@ -18,7 +20,8 @@ function rf_kick!(
     sin_ϕs,
     rf_factor,
     ϕs,
-    particles::StructArray{Particle{T}}
+    particles::StructArray{Particle{T}},
+    buffers::SimulationBuffers{T}
 ) where T<:Float64
     
     # # Check if voltage is a StochasticTriple
@@ -59,16 +62,57 @@ function rf_kick!(
     #     end
     # end
 
-    chunk_size = max(1, length(particles) ÷ Threads.nthreads() ÷ 4)
+    # chunk_size = max(1, length(particles) ÷ Threads.nthreads())
         
-    Threads.@threads for chunk_start in 1:chunk_size:length(particles)
-        chunk_end = min(chunk_start + chunk_size - 1, length(particles))
+    # Threads.@threads for chunk_start in 1:chunk_size:length(particles)
+    #     chunk_end = min(chunk_start + chunk_size - 1, length(particles))
         
-        @turbo for i in chunk_start:chunk_end
-            ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
-            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-        end
+    #     @turbo for i in chunk_start:chunk_end
+    #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+    #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+    #     end
+    # end
+
+    # Threads.@threads for tid in 1:Threads.nthreads()
+    #     chunk_range = buffers.thread_chunks[tid]
+    #     @turbo for i in chunk_range
+    #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+    #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+    #     end
+    # end
+
+    @turbo for i in 1:length(particles.coordinates.z)
+        ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+        particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
     end
+
+    # ThreadsX.foreach(1:length(particles)) do i
+    #     @inbounds begin
+    #         z_i = particles.coordinates.z[i]
+    #         ΔE_i = particles.coordinates.ΔE[i]
+    
+    #         ϕ_val = -z_i * rf_factor + ϕs
+    #         ΔE_i += voltage * (sin(ϕ_val) - sin_ϕs)
+    
+    #         particles.coordinates.ΔE[i] = ΔE_i
+    #     end
+    # end
+
+    # @floop ThreadedEx() for i in 1:length(particles)
+    #     @inbounds begin # Use @inbounds for direct array access
+    #         # Read values
+    #         z_i = particles.coordinates.z[i]
+    #         ΔE_i = particles.coordinates.ΔE[i] # Read initial ΔE
+
+    #         # Calculate new value
+    #         ϕ_val = -z_i * rf_factor + ϕs
+    #         ΔE_new = ΔE_i + voltage * (sin(ϕ_val) - sin_ϕs)
+
+    #         # Write back
+    #         particles.coordinates.ΔE[i] = ΔE_new
+    #     end
+    # end
+
 
     
     return nothing

@@ -12,7 +12,8 @@ Memory-efficient implementation for StochasticTriple.
 function synchrotron_radiation!(
     E0, 
     radius, 
-    particles::StructArray{Particle{T}}
+    particles::StructArray{Particle{T}},
+    buffers::SimulationBuffers{T}
 ) where T<:Float64
     
     # Check type once, outside the loop
@@ -43,15 +44,15 @@ function synchrotron_radiation!(
     ∂U_∂E = 4 * 8.85e-5 * (E0/1e9)^3 / radius
     damping_factor = 1 - ∂U_∂E
     
-    # Apply damping in parallel chunks
-    chunk_size = max(1, length(particles) ÷ Threads.nthreads() ÷ 4)
-    
-    Threads.@threads for chunk_start in 1:chunk_size:length(particles)
-        chunk_end = min(chunk_start + chunk_size - 1, length(particles))
-        
-        @turbo for i in chunk_start:chunk_end
-            particles.coordinates.ΔE[i] *= damping_factor
-        end
+    # Threads.@threads for tid in 1:Threads.nthreads()
+    #     chunk_range = buffers.thread_chunks[tid]
+    #     @turbo for i in chunk_range
+    #         particles.coordinates.ΔE[i] *= damping_factor
+    #     end
+    # end
+
+    @turbo for i in 1:length(particles.coordinates.z)
+        particles.coordinates.ΔE[i] *= damping_factor
     end
     
     return nothing
