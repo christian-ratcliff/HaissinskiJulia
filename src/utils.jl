@@ -16,7 +16,7 @@ using FFTW
 using FHist
 using Interpolations
 using MPI
-
+using CUDA
 """
     threaded_fieldwise_copy!(destination, source)
 
@@ -121,6 +121,24 @@ function next_power_of_two(n::Int64)::Int64
     return Int64(2^ceil(Int, log2(n))) # Use Int for exponent ceiling
 end
 
+
+function is_gpu_compatible()
+    if !CUDA.functional()
+        return false
+    end
+    
+    # Check compute capability
+    cc = CUDA.capability(CUDA.device())
+    # If using H200 (compute capability 9.0), use special handling
+    if cc.major >= 9
+        # For H200, we need to be more careful with certain operations
+        println("H200 GPU detected (compute capability $cc)")
+        return true, :hopper
+    end
+    
+    return true, :standard
+end
+
 """
     create_simulation_buffers(
         n_particles::Int64,
@@ -149,7 +167,8 @@ function create_simulation_buffers(
     nbins::Int64,
     use_mpi::Bool,
     comm_size::Int = 1; # Default to 1 for serial case
-    T::Type=Float64
+    T::Type=Float64,
+    use_gpu::Bool=is_gpu_available()
     )::SimulationBuffers{T}
 
     if nbins <= 0
@@ -241,6 +260,17 @@ function create_simulation_buffers(
         _thread_chunks[i] = chunk_start:chunk_end
     end
 
+    # Initialize GPU buffers if requested
+    gpu_buffers = nothing
+    gpu_enabled = false
+    
+    if use_gpu
+        gpu_buffers, gpu_enabled = initialize_gpu(n_particles, nbins, T)
+        if !gpu_enabled
+            @warn "GPU requested but not available or initialization failed. Falling back to CPU."
+        end
+    end
+
     return SimulationBuffers{T}(
         _WF, _potential, _Δγ, _η, _coeff, _temp_z, _temp_ΔE, _temp_ϕ, _ϕ, _random_buffer,_ΔE_initial_turn, _mpi_fft_W, _mpi_fft_L, _mpi_convol_freq,
         _WF_temp, _λ, _normalized_λ, _bin_counts,
@@ -249,7 +279,8 @@ function create_simulation_buffers(
         _global_bin_counts,_normalized_global_amounts, _potential_values_at_centers_global, _fft_plans, _interp_indices, _interp_weights,
         _scatterv_counts, _scatterv_displs,
         _mpi_buffers, _allreduce_energy, _allreduce_stats, _allreduce_single,
-        _thread_chunks
+        _thread_chunks, gpu_buffers,
+        gpu_enabled
     )
 end
 

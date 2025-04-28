@@ -23,6 +23,12 @@ using FHist
 # using Plots
 using LaTeXStrings
 
+try
+    using CUDA
+catch e
+    @warn "CUDA.jl not available: $e"
+end
+
 # Include submodules
 include("constants.jl")
 include("data_structures.jl")
@@ -33,6 +39,20 @@ include("evolution.jl")
 include("quantum_excitation.jl")
 include("wakefield.jl")
 include("visualization.jl")
+
+# Include GPU implementations if CUDA is available
+const has_cuda = isfile(joinpath(@__DIR__, "gpu_data_structures.jl")) && 
+                (@isdefined CUDA) && isdefined(CUDA, :functional) && CUDA.functional()
+
+if has_cuda
+    include("gpu_data_transfer.jl")
+    include("gpu_utils.jl")
+    include("gpu_rf_kick.jl")
+    include("gpu_synchrotron_radiation.jl")
+    include("gpu_quantum_excitation.jl")
+    include("gpu_phase_advance.jl")
+    include("gpu_wakefield.jl")
+end
 
 # Include parameter sensitivity framework
 include("parameter_sensitivity/types.jl")
@@ -59,5 +79,13 @@ export z_to_ϕ, ϕ_to_z, calc_rf_factor, create_simulation_buffers,copyto_partic
 export VoltageTransform, AlphaCompactionTransform, HarmonicNumberTransform, PipeRadiusTransform, ParameterTransformation, apply_transform, compute_fom, ParameterSensitivity
 export EnergySpreadFoM, BunchLengthFoM, EmittanceFoM, FigureOfMerit
 export compute_sensitivity, scan_parameter, plot_sensitivity_scan
+
+# Export GPU-related functionality
+if has_cuda
+    export is_gpu_available, initialize_gpu, GPUConfig
+    export GPUParticleData, GPUSimulationBuffers
+    export transfer_particles_to_gpu!, transfer_particles_to_cpu!
+    export is_gpu_aware_mpi_available
+end
 
 end # module

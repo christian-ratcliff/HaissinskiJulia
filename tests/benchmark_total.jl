@@ -23,6 +23,31 @@ using StructArrays
 using MPI
 using Profile, ProfileSVG
 using Accessors
+using CUDA
+
+function timeout(f::Task, timeout_seconds::Real)
+    timer = Timer(timeout_seconds) do t
+        try
+            schedule(f, InterruptException(); error=true)
+        catch
+            # Task might be already finished
+        end
+    end
+    
+    try
+        # Wait for task to complete or timeout
+        wait(f)
+        return true
+    catch e
+        if isa(e, InterruptException)
+            return false  # Timed out
+        else
+            rethrow(e)  # Different error
+        end
+    finally
+        close(timer)
+    end
+end
 
 function parse_command_args()
     parsed_args = Dict{String, Any}()
@@ -40,9 +65,14 @@ function parse_command_args()
             parsed_args["particles"] = parse(Float64, particles_str)
             i += 2
         elseif arg == "--mpi"
-            # Keep the existing --mpi flag handling
             parsed_args["mpi"] = true
             i += 1
+        elseif arg == "--gpu"
+            parsed_args["gpu"] = true
+            i += 1
+        elseif arg == "--threads-per-block" && i < length(ARGS)
+            parsed_args["threads_per_block"] = parse(Int, ARGS[i+1])
+            i += 2
         else
             # Skip unknown arguments
             i += 1
@@ -93,10 +123,37 @@ function format_time(t_sec)
 end
 
 
-# --- Determine Run Mode from Command Line ---
-# Check if "--mpi" flag is present in the command line arguments
-const run_mpi_flag = "--mpi" in ARGS
 
+# --- Determine Run Mode from Command Line ---
+const run_mpi_flag = get(parsed_args, "mpi", false)
+run_gpu_flag = get(parsed_args, "gpu", false)
+
+
+
+# --- Check if GPU is requested but not available ---
+if run_gpu_flag
+    try
+        using CUDA
+        if !CUDA.functional()
+            @warn "GPU requested but CUDA not functional. Falling back to CPU."
+            global run_gpu_flag = false
+        end
+    catch e
+        @warn "GPU requested but CUDA.jl not available: $e. Falling back to CPU."
+        global run_gpu_flag = false
+    end
+end
+
+# Create GPU configuration if using GPU
+gpu_config = nothing  # Define outside the if block
+if run_gpu_flag
+    try
+        threads_per_block = get(parsed_args, "threads_per_block", 256)
+        global gpu_config = StochasticHaissinski.GPUConfig(threads_per_block=threads_per_block)
+    catch e
+        @warn "GPU requested but GPUConfig not available: $e"
+    end
+end
 
 # --- MPI Initialization (Conditional) ---
 comm = nothing
@@ -132,7 +189,16 @@ local benchmark_results # Store BenchmarkTools results locally on rank 0 if need
 # --- Parameters (Identical on all ranks/processes) ---
 num_threads = Threads.nthreads() # Julia threads per process/rank
 log_dir_base = joinpath(project_root, "logs") # Log dir relative to project root
-log_subdir = run_mpi_flag ? "mpi_run" : "serial_run"
+# Update log_subdir based on execution mode
+log_subdir = if run_mpi_flag && run_gpu_flag
+    "mpi_gpu_run"
+elseif run_mpi_flag
+    "mpi_run"
+elseif run_gpu_flag
+    "gpu_run"
+else
+    "serial_run"
+end
 log_dir = joinpath(log_dir_base, log_subdir)
 parameters = Dict{String, Any}()
 
@@ -167,8 +233,7 @@ end;
 
 
 # --- Simulation Setup ---
-# n_turns = Int64(1e2) # Number of turns
-# n_particles_global = Int64(1e5); # Total number of particles
+
 n_turns = haskey(parsed_args, "turns") ? Int64(parsed_args["turns"]) : Int64(1e2)
 n_particles_global = haskey(parsed_args, "particles") ? Int64(parsed_args["particles"]) : Int64(1e5)
 
@@ -258,7 +323,8 @@ nbins_calc = StochasticHaissinski.next_power_of_two(max(64, Int(round(n_particle
 # Use the determined E0 (generated or broadcasted)
 sim_params = SimulationParameters(E0, mass, voltage, harmonic, radius, pipe_radius, α_c, ϕs, freq_rf, n_turns, true, true, true, true, true);
 # Buffers sized based on n_local (MPI) or n_global (Serial)
-buffers = StochasticHaissinski.create_simulation_buffers(n_local, nbins_calc, run_mpi_flag, comm_size; T=Float64);
+buffers = StochasticHaissinski.create_simulation_buffers(n_local, nbins_calc, run_mpi_flag, comm_size; T=Float64, use_gpu=run_gpu_flag);
+
 
 # --- Pre-run / Compilation ---
 if rank == 0; println("Performing pre-run for compilation..."); end
@@ -266,9 +332,43 @@ pre_params = SimulationParameters( E0, mass, voltage, harmonic, radius, pipe_rad
                                     sim_params.use_wakefield, sim_params.update_η, sim_params.update_E0,
                                     sim_params.SR_damping, sim_params.use_excitation);
 # Use deepcopy to avoid modifying original data/buffers during compilation run
-particles_copy = deepcopy(particles); buffers_copy = deepcopy(buffers)
-# Call evolve with the correct flag
-StochasticHaissinski.longitudinal_evolve!(particles_copy, pre_params, buffers_copy, comm, run_mpi_flag);
+particles_copy = deepcopy(particles)
+buffers_copy = deepcopy(buffers)
+
+
+# Replace lines 321-323 with this:
+if run_gpu_flag
+    try
+        # Try initializing CUDA with a timeout
+        gpu_init_timeout = 30.0  # seconds
+        init_task = @async CUDA.functional()
+        
+        if !fetch(timeout(init_task, gpu_init_timeout))
+            @warn "GPU initialization timed out after $(gpu_init_timeout) seconds. Falling back to CPU."
+            global run_gpu_flag = false
+        elseif !init_task.result
+            @warn "CUDA not functional. Falling back to CPU."
+            global run_gpu_flag = false
+        else
+            # Only try device operations if CUDA is functional
+            try
+                CUDA.device!(0)  # Select GPU first (don't reset)
+                println("Using GPU: ", CUDA.name(CUDA.device()))
+            catch e
+                @warn "Failed to select GPU device: $e. Falling back to CPU."
+                global run_gpu_flag = false
+            end
+        end
+    catch e
+        @warn "GPU initialization error: $e. Falling back to CPU."
+        global run_gpu_flag = false
+    end
+end
+
+# Make sure to pass the GPU flag to the evolution function
+StochasticHaissinski.longitudinal_evolve!(
+    particles_copy, pre_params, buffers_copy, comm, run_mpi_flag, run_gpu_flag, gpu_config)
+
 if run_mpi_flag; MPI.Barrier(comm); end # Sync after compilation run
 if rank == 0; println("Compilation run finished."); end
 
@@ -289,8 +389,30 @@ if rank == 0
     turns_raw = @sprintf("%.0e", Float64(n_turns)); particles_raw = @sprintf("%.0e", Float64(n_particles_global))
     turns_sci = replace(replace(replace(turns_raw, "." => ""), "e+" => "e"), r"e0+" => "e")
     particles_sci = replace(replace(replace(particles_raw, "." => ""), "e+" => "e"), r"e0+" => "e")
-    mode_tag = run_mpi_flag ? "_mpi$(comm_size)" : "_serial"
-
+    # Add GPU parameters to the logging
+    parameters["use_gpu"] = run_gpu_flag
+    if run_gpu_flag
+        parameters["gpu_threads_per_block"] = gpu_config.threads_per_block
+        parameters["gpu_max_blocks"] = gpu_config.max_blocks
+        parameters["gpu_prefer_l1_cache"] = gpu_config.prefer_l1_cache
+        
+        # Get GPU device information
+        parameters["gpu_device"] = CUDA.device()
+        parameters["gpu_device_name"] = CUDA.name(CUDA.device())
+        parameters["gpu_compute_capability"] = CUDA.capability(CUDA.device())
+    end
+    
+    # Update filename to include GPU info
+    mode_tag = if run_mpi_flag && run_gpu_flag
+        "_mpigpu$(comm_size)"
+    elseif run_mpi_flag
+        "_mpi$(comm_size)"
+    elseif run_gpu_flag
+        "_gpu"
+    else
+        "_serial"
+    end
+    
     log_filename = "turns$(turns_sci)_particles$(particles_sci)$(mode_tag)_threads$(num_threads).log"
     log_path = joinpath(log_dir, log_filename)
     # Use assignment that works inside conditional block
@@ -344,15 +466,19 @@ particles_bench = deepcopy(particles); buffers_bench = deepcopy(buffers)
  # Parameters are immutable
  bench_sim_params = sim_params
 # Define the benchmarkable expression
-bench_run = @benchmarkable StochasticHaissinski.longitudinal_evolve!($particles_bench, $bench_sim_params, $buffers_bench, $comm, $run_mpi_flag) setup=(
+bench_run = @benchmarkable StochasticHaissinski.longitudinal_evolve!($particles_bench, $bench_sim_params, $buffers_bench, $comm, $run_mpi_flag, $run_gpu_flag, $gpu_config) setup=(
     # Create fresh copies for this sample evaluation
     particles_bench = deepcopy($particles);
     buffers_bench = deepcopy($buffers);
     # Synchronize before the timing starts for this evaluation
-    if $run_mpi_flag; MPI.Barrier($comm); end
+    if $run_mpi_flag; MPI.Barrier($comm); end;
+    # Make sure GPU is synchronized before measurement
+    if $run_gpu_flag; CUDA.synchronize(); end
 ) teardown=(
     # Synchronize after the timing ends for this evaluation
-    if $run_mpi_flag; MPI.Barrier($comm); end
+    if $run_mpi_flag; MPI.Barrier($comm); end;
+    # Make sure GPU is synchronized after measurement
+    if $run_gpu_flag; CUDA.synchronize(); end
 )
 
 # Run the benchmark - all ranks participate
@@ -403,11 +529,50 @@ if rank == 0 && @isdefined(log_output)
     log_output("-"^20)
 end
 
+# --- GPU-specific Performance Metrics (If Using GPU) ---
+if run_gpu_flag && rank == 0 && @isdefined(log_output)
+    # Get CUDA memory statistics
+    mem_info = CUDA.MemoryInfo()
+    free_bytes = mem_info.free
+    total_bytes = mem_info.total
+    used_bytes = total_bytes - free_bytes
+    usage_percentage = (used_bytes / total_bytes) * 100
+    
+    log_output("\nGPU Memory Statistics:")
+    log_output("  Total GPU Memory: $(format_bytes(total_bytes))")
+    log_output("  Used GPU Memory: $(format_bytes(used_bytes)) ($(Printf.@sprintf("%.2f", usage_percentage))%)")
+    log_output("  Free GPU Memory: $(format_bytes(free_bytes))")
+    
+    # If NVML is available, get additional metrics
+    try
+        using CUDA.NVML
+        device = NVML.Device(0) # Assuming device 0
+        utilization = NVML.utilization(device)
+        temp = NVML.temperature(device)
+        power = NVML.power_usage(device)
+        
+        log_output("\nGPU Hardware Metrics:")
+        log_output("  GPU Utilization: $(utilization.gpu)%")
+        log_output("  Memory Utilization: $(utilization.memory)%")
+        log_output("  Temperature: $(temp)°C")
+        log_output("  Power Usage: $(power/1000.0) W")
+    catch e
+        log_output("\nNVML metrics not available: $e")
+    end
+    
+    log_output("-"^20)
+end
+
 
 # --- Performance Monitoring Section (LIKWID - Single Run, Output Suppressed), Only Measure if turns = 1e3 for study performance ---
 if n_turns == 1e3
-    if rank == 0 && @isdefined(log_output) log_output("\nStarting LIKWID performance monitoring ('FLOPS_DP')..."); end
-
+    if rank == 0 && @isdefined(log_output)
+        if run_gpu_flag
+            log_output("\nStarting performance monitoring with GPU metrics...")
+        else
+            log_output("\nStarting LIKWID performance monitoring ('FLOPS_DP')...")
+        end
+    end
     # Use fresh copies for the perfmon run
     particles_perf = deepcopy(particles); buffers_perf = deepcopy(buffers)
     perf_sim_params = sim_params
@@ -519,12 +684,58 @@ if n_turns == 1e3
         end
         log_output("-"^20)
     end # End Rank 0 LIKWID processing
+
+    # GPU profiling if using GPU
+    if run_gpu_flag
+        # Reset particles and buffers for profiling
+        particles_prof = deepcopy(particles)
+        buffers_prof = deepcopy(buffers)
+        
+        # Synchronize before profiling
+        if run_mpi_flag; MPI.Barrier(comm); end
+        CUDA.synchronize()
+        
+        # Profile with CUDA
+        if rank == 0 && @isdefined(log_output)
+            log_output("\nGPU Kernel Profiling:")
+            
+            # Use CUDA's profiler
+            CUDA.@profile begin
+                StochasticHaissinski.longitudinal_evolve!(
+                    particles_prof, sim_params, buffers_prof, comm, run_mpi_flag, run_gpu_flag, gpu_config
+                )
+            end
+            
+            # The profile output will be printed to standard output
+            # We can't easily capture it in the log
+            log_output("GPU profiling completed. See standard output for details.")
+        else
+            # Non-root ranks still need to run the code during profiling
+            StochasticHaissinski.longitudinal_evolve!(
+                particles_prof, sim_params, buffers_prof, comm, run_mpi_flag, run_gpu_flag, gpu_config
+            )
+        end
+        
+        # Synchronize after profiling
+        if run_mpi_flag; MPI.Barrier(comm); end
+        CUDA.synchronize()
+    end
+
 else
     if rank == 0 && @isdefined(log_output) log_output("\nSkipping LIKWID performance monitoring since n_turns != 1e3"); end
 end
 
 
 # --- Final Cleanup ---
+if run_gpu_flag
+    try
+        CUDA.reclaim()
+    catch e
+        if rank == 0
+            println("Warning: Failed to reclaim GPU memory: $e")
+        end
+    end
+end
 if rank == 0
     # Close the log file if it was successfully opened
     if @isdefined(log_file) && log_file !== nothing && isopen(log_file)
