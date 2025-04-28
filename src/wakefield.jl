@@ -15,6 +15,7 @@ using FFTW
 using Interpolations
 using FHist
 using MPI # Needed for MPI operations
+using FLoops
 
 # Local helper functions (used by both modes potentially)
 
@@ -90,7 +91,7 @@ function zero_alloc_interpolation!(
     #     end
     # end
 
-    @turbo for i in 1:length(weights_buffer)
+    @inbounds for i in 1:length(weights_buffer)
         idx = indices_buffer[i]
         w = weights_buffer[i]
         
@@ -194,6 +195,10 @@ function apply_wakefield_inplace!(
                 buffers.WF_temp[i] = calculate_wake_function(bin_centers[i], wake_factor, wake_sqrt, inv_cτ)
             end
 
+            # @floop ThreadedEx() for i in 1:nbins
+            #     @inbounds buffers.WF_temp[i] = calculate_wake_function(bin_centers[i], wake_factor, wake_sqrt, inv_cτ)
+            # end
+
             # Calculate smoothed global lambda using Gaussian kernel
             # Smoothing width depends on GLOBAL sigma_z
             delta_std = 0.15 # Consistent smoothing parameter = 0.15 if sigma_z > 0
@@ -205,11 +210,20 @@ function apply_wakefield_inplace!(
                 buffers.normalized_global_amounts[i] = buffers.global_bin_counts[i] * inv_n_global
             end
 
+            
+
             # lambda_kernel = Vector{T}(undef, nbins)
             lambda_kernel = view(buffers.random_buffer, 1:nbins)
-            @inbounds for i in 1:nbins
+
+
+            @inbounds @simd for i in 1:nbins
                 lambda_kernel[i] = delta(bin_centers[i], delta_std) # Use the delta function
             end
+            
+            # @floop ThreadedEx() for i in 1:nbins
+            #     @inbounds lambda_kernel[i] = delta(bin_centers[i], delta_std)
+            # end
+            
 
             copyto!(buffers.λ, lambda_kernel)
 

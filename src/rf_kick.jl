@@ -1,4 +1,6 @@
 using StochasticAD
+using ThreadsX
+using FLoops
 # using StochasticAD
 
 """
@@ -83,6 +85,33 @@ function rf_kick!(
         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
     end
+
+    # ThreadsX.foreach(1:length(particles)) do i
+    #     @inbounds begin
+    #         z_i = particles.coordinates.z[i]
+    #         ΔE_i = particles.coordinates.ΔE[i]
+    
+    #         ϕ_val = -z_i * rf_factor + ϕs
+    #         ΔE_i += voltage * (sin(ϕ_val) - sin_ϕs)
+    
+    #         particles.coordinates.ΔE[i] = ΔE_i
+    #     end
+    # end
+
+    # @floop ThreadedEx() for i in 1:length(particles)
+    #     @inbounds begin # Use @inbounds for direct array access
+    #         # Read values
+    #         z_i = particles.coordinates.z[i]
+    #         ΔE_i = particles.coordinates.ΔE[i] # Read initial ΔE
+
+    #         # Calculate new value
+    #         ϕ_val = -z_i * rf_factor + ϕs
+    #         ΔE_new = ΔE_i + voltage * (sin(ϕ_val) - sin_ϕs)
+
+    #         # Write back
+    #         particles.coordinates.ΔE[i] = ΔE_new
+    #     end
+    # end
 
 
     

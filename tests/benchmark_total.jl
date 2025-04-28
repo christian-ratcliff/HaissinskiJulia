@@ -22,6 +22,7 @@ using Random
 using StructArrays
 using MPI
 using Profile, ProfileSVG
+using Accessors
 
 function parse_command_args()
     parsed_args = Dict{String, Any}()
@@ -340,8 +341,8 @@ if rank == 0 && @isdefined(log_output) log_output("Starting BenchmarkTools run (
 
 # Use copies for benchmarking to allow multiple runs without resetting state
 particles_bench = deepcopy(particles); buffers_bench = deepcopy(buffers)
-bench_sim_params = sim_params # Parameters are immutable
-
+ # Parameters are immutable
+ bench_sim_params = sim_params
 # Define the benchmarkable expression
 bench_run = @benchmarkable StochasticHaissinski.longitudinal_evolve!($particles_bench, $bench_sim_params, $buffers_bench, $comm, $run_mpi_flag) setup=(
     # Create fresh copies for this sample evaluation
@@ -403,120 +404,124 @@ if rank == 0 && @isdefined(log_output)
 end
 
 
-# --- Performance Monitoring Section (LIKWID - Single Run, Output Suppressed) ---
-if rank == 0 && @isdefined(log_output) log_output("\nStarting LIKWID performance monitoring ('FLOPS_DP')..."); end
+# --- Performance Monitoring Section (LIKWID - Single Run, Output Suppressed), Only Measure if turns = 1e3 for study performance ---
+if n_turns == 1e3
+    if rank == 0 && @isdefined(log_output) log_output("\nStarting LIKWID performance monitoring ('FLOPS_DP')..."); end
 
-# Use fresh copies for the perfmon run
-particles_perf = deepcopy(particles); buffers_perf = deepcopy(buffers)
-perf_sim_params = sim_params
+    # Use fresh copies for the perfmon run
+    particles_perf = deepcopy(particles); buffers_perf = deepcopy(buffers)
+    perf_sim_params = sim_params
 
-# Declare the variable to hold this rank's result *before* the try/catch
-local local_flop_count::Float64 = NaN # Initialize before try/catch
-original_stdout = stdout   
+    # Declare the variable to hold this rank's result *before* the try/catch
+    local local_flop_count::Float64 = NaN # Initialize before try/catch
+    original_stdout = stdout   
 
-try
-    if run_mpi_flag; MPI.Barrier(comm); end # Sync before perfmon start
+    try
+        if run_mpi_flag; MPI.Barrier(comm); end # Sync before perfmon start
 
-    redirect_stdout(devnull) # <<< Redirect stdout HERE
+        redirect_stdout(devnull) # <<< Redirect stdout HERE
 
-    # Run the code block under LIKWID monitoring
-    _, events = @perfmon "FLOPS_DP" begin
-        StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag)
-    end
+        # Run the code block under LIKWID monitoring
+        _, events = @perfmon "FLOPS_DP" begin
+            StochasticHaissinski.longitudinal_evolve!(particles_perf, perf_sim_params, buffers_perf, comm, run_mpi_flag)
+        end
 
 
-    redirect_stdout(original_stdout)
-
-    if run_mpi_flag; MPI.Barrier(comm); end # Sync after perfmon end
-
-    # Extract FLOP count if available
-    if haskey(events, "FLOPS_DP") && isa(events["FLOPS_DP"], Vector) && !isempty(events["FLOPS_DP"]) && haskey(events["FLOPS_DP"][1], "RETIRED_SSE_AVX_FLOPS_ALL")
-        # Assign to the local variable declared outside the try block using global
-        global local_flop_count = Float64(events["FLOPS_DP"][1]["RETIRED_SSE_AVX_FLOPS_ALL"])
-    else
-        # Print message to original stdout if LIKWID data is missing
-        println(original_stdout, "Rank $rank: LIKWID 'FLOPS_DP' counter key not found or data structure unexpected.");
-        global local_flop_count = NaN # Ensure it's NaN if extraction failed
-    end
-catch e
-    # <<< Ensure stdout restored even on error BEFORE printing error message
-    redirect_stdout(original_stdout)
-    # Print message to original stdout if LIKWID fails
-    println(original_stdout, "Rank $rank: LIKWID performance monitoring failed: ", e);
-    global local_flop_count = NaN # Ensure it's NaN if try block failed
-    # Ensure barrier is still called in case of error on some ranks
-    if run_mpi_flag; MPI.Barrier(comm); end
-finally
-    # <<< Ensure stdout is *always* restored
-    if stdout != original_stdout
         redirect_stdout(original_stdout)
+
+        if run_mpi_flag; MPI.Barrier(comm); end # Sync after perfmon end
+
+        # Extract FLOP count if available
+        if haskey(events, "FLOPS_DP") && isa(events["FLOPS_DP"], Vector) && !isempty(events["FLOPS_DP"]) && haskey(events["FLOPS_DP"][1], "RETIRED_SSE_AVX_FLOPS_ALL")
+            # Assign to the local variable declared outside the try block using global
+            global local_flop_count = Float64(events["FLOPS_DP"][1]["RETIRED_SSE_AVX_FLOPS_ALL"])
+        else
+            # Print message to original stdout if LIKWID data is missing
+            println(original_stdout, "Rank $rank: LIKWID 'FLOPS_DP' counter key not found or data structure unexpected.");
+            global local_flop_count = NaN # Ensure it's NaN if extraction failed
+        end
+    catch e
+        # <<< Ensure stdout restored even on error BEFORE printing error message
+        redirect_stdout(original_stdout)
+        # Print message to original stdout if LIKWID fails
+        println(original_stdout, "Rank $rank: LIKWID performance monitoring failed: ", e);
+        global local_flop_count = NaN # Ensure it's NaN if try block failed
+        # Ensure barrier is still called in case of error on some ranks
+        if run_mpi_flag; MPI.Barrier(comm); end
+    finally
+        # <<< Ensure stdout is *always* restored
+        if stdout != original_stdout
+            redirect_stdout(original_stdout)
+        end
     end
-end
 
-# Gather FLOP counts (NaN if failed/skipped) to Rank 0
-send_buf = Ref(local_flop_count); recv_buf = nothing
-if run_mpi_flag
-    if rank == 0; recv_buf = Vector{Float64}(undef, comm_size); end
-    MPI.Gather!(send_buf, recv_buf, 0, comm)
-else
-    # In serial mode, recv_buf is just the local count
-    if rank == 0; recv_buf = [local_flop_count]; end
-end
+    # Gather FLOP counts (NaN if failed/skipped) to Rank 0
+    send_buf = Ref(local_flop_count); recv_buf = nothing
+    if run_mpi_flag
+        if rank == 0; recv_buf = Vector{Float64}(undef, comm_size); end
+        MPI.Gather!(send_buf, recv_buf, 0, comm)
+    else
+        # In serial mode, recv_buf is just the local count
+        if rank == 0; recv_buf = [local_flop_count]; end
+    end
 
 
-# Rank 0: Process and Log LIKWID Results
-if rank == 0 && @isdefined(log_output)
-    log_output("\nPerformance monitoring results (Aggregated LIKWID FLOPS_DP):")
-    # Explicitly declare these variables as local to this block
-    local total_flops = 0.0
-    local any_rank_failed = false
-    local valid_flops_collected = 0
+    # Rank 0: Process and Log LIKWID Results
+    if rank == 0 && @isdefined(log_output)
+        log_output("\nPerformance monitoring results (Aggregated LIKWID FLOPS_DP):")
+        # Explicitly declare these variables as local to this block
+        local total_flops = 0.0
+        local any_rank_failed = false
+        local valid_flops_collected = 0
 
-    if recv_buf !== nothing
-        current_comm_size = run_mpi_flag ? comm_size : 1 # Get actual size for loop
-        for r_idx in 1:current_comm_size
-            r_rank = r_idx - 1 # 0-based rank index
-            flops_r = recv_buf[r_idx]
-            if isnan(flops_r)
-                log_output("Rank $r_rank: FLOP count collection failed or unavailable.")
-                any_rank_failed = true # Assignment to local variable
-            else
-                log_output("Rank $r_rank: Local FLOPs = $(@sprintf("%.3e", flops_r))")
-                # Check for non-NaN before adding
-                if !isnan(flops_r)
-                    total_flops += flops_r             
-                    valid_flops_collected += 1       
-                else 
-                    any_rank_failed = true             
+        if recv_buf !== nothing
+            current_comm_size = run_mpi_flag ? comm_size : 1 # Get actual size for loop
+            for r_idx in 1:current_comm_size
+                r_rank = r_idx - 1 # 0-based rank index
+                flops_r = recv_buf[r_idx]
+                if isnan(flops_r)
+                    log_output("Rank $r_rank: FLOP count collection failed or unavailable.")
+                    any_rank_failed = true # Assignment to local variable
+                else
+                    log_output("Rank $r_rank: Local FLOPs = $(@sprintf("%.3e", flops_r))")
+                    # Check for non-NaN before adding
+                    if !isnan(flops_r)
+                        total_flops += flops_r             
+                        valid_flops_collected += 1       
+                    else 
+                        any_rank_failed = true             
+                    end
                 end
             end
-        end
 
-        if any_rank_failed
-            log_output("Total FLOPs (approximate, from $valid_flops_collected ranks): $(@sprintf("%.3e", total_flops))")
-        elseif valid_flops_collected > 0
-            log_output("Total aggregated FLOPs: $(@sprintf("%.3e", total_flops))")
-        else
-                log_output("No valid FLOP counts collected from any rank.")
-        end
+            if any_rank_failed
+                log_output("Total FLOPs (approximate, from $valid_flops_collected ranks): $(@sprintf("%.3e", total_flops))")
+            elseif valid_flops_collected > 0
+                log_output("Total aggregated FLOPs: $(@sprintf("%.3e", total_flops))")
+            else
+                    log_output("No valid FLOP counts collected from any rank.")
+            end
 
-        # Calculate GFLOPS rate using the Max Median Time from BenchmarkTools
-        # Use global_max_median_time calculated earlier
-        # Check variables are defined and valid before calculation
-        if @isdefined(global_max_median_time) && !any_rank_failed && total_flops > 0 && global_max_median_time > 0 && valid_flops_collected == current_comm_size
-             gflops_rate = total_flops / global_max_median_time / 1e9
-             log_output("Aggregated GFLOPS rate (based on Max Median Time): $(@sprintf("%.3f", gflops_rate)) GFLOPS")
-             # Calculate FLOPs per particle per turn (using global counts)
-             flops_per_particle_per_turn = total_flops / n_particles_global / n_turns
-             log_output("FLOPs per particle per turn: $(@sprintf("%.3f", flops_per_particle_per_turn))")
+            # Calculate GFLOPS rate using the Max Median Time from BenchmarkTools
+            # Use global_max_median_time calculated earlier
+            # Check variables are defined and valid before calculation
+            if @isdefined(global_max_median_time) && !any_rank_failed && total_flops > 0 && global_max_median_time > 0 && valid_flops_collected == current_comm_size
+                gflops_rate = total_flops / global_max_median_time / 1e9
+                log_output("Aggregated GFLOPS rate (based on Max Median Time): $(@sprintf("%.3f", gflops_rate)) GFLOPS")
+                # Calculate FLOPs per particle per turn (using global counts)
+                flops_per_particle_per_turn = total_flops / n_particles_global / n_turns
+                log_output("FLOPs per particle per turn: $(@sprintf("%.3f", flops_per_particle_per_turn))")
+            else
+                log_output("GFLOPS rate calculation skipped (FLOP count failed, zero FLOPs, zero max median time, or benchmark results missing).")
+            end
         else
-            log_output("GFLOPS rate calculation skipped (FLOP count failed, zero FLOPs, zero max median time, or benchmark results missing).")
+            log_output("Failed to receive FLOP counts from ranks.")
         end
-    else
-        log_output("Failed to receive FLOP counts from ranks.")
-    end
-    log_output("-"^20)
-end # End Rank 0 LIKWID processing
+        log_output("-"^20)
+    end # End Rank 0 LIKWID processing
+else
+    if rank == 0 && @isdefined(log_output) log_output("\nSkipping LIKWID performance monitoring since n_turns != 1e3"); end
+end
 
 
 # --- Final Cleanup ---
@@ -562,8 +567,6 @@ end
 #         end
 #     end
 # end
-
-
 
 # Finalize MPI 
 if run_mpi_flag && MPI.Initialized() && !MPI.Finalized()
