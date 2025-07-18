@@ -95,13 +95,11 @@ begin
         
         # Main evolution loop - now all arrays can hold type T
         for turn in 1:n_turns
-            Random.seed!(turn)
             # RF voltage kick
-            # for i in 1:n_particles
-            #     ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs_param
-            #     particles.coordinates.ΔE[i] += voltage_param * (sin(ϕ_val) - sin_ϕs)
-            # end
-            rf_kick!(voltage_param, sin_ϕs, rf_factor, ϕs_param, particles)
+            for i in 1:n_particles
+                ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs_param
+                particles.coordinates.ΔE[i] += voltage_param * (sin(ϕ_val) - sin_ϕs)
+            end
             
             # Quantum excitation (stochastic effect)
             ∂U_∂E = 4 * 8.85e-5 * (E0_param/1e9)^3 / radius_param
@@ -205,14 +203,14 @@ begin
             push!(derivatives, deriv)
         end
         
-        # for hh in step_sizes
-        #     derivatives1 = Float64[]
-        #     for i in 1:n_samples
-        #         deriv = (f(x + hh) - f(x - hh)) / (2 * hh)
-        #         push!(derivatives1, deriv)
-        #     end
-        #     println("  h = $hh: derivative = $(round(mean(derivatives1), digits=4)) ± $(round(std(derivatives1) / sqrt(n_samples), digits=4))")
-        # end
+        for hh in step_sizes
+            derivatives1 = Float64[]
+            for i in 1:n_samples
+                deriv = (f(x + hh) - f(x - hh)) / (2 * hh)
+                push!(derivatives1, deriv)
+            end
+            println("  h = $hh: derivative = $(round(mean(derivatives1), digits=4)) ± $(round(std(derivatives1) / sqrt(n_samples), digits=4))")
+        end
         
         return mean(derivatives), std(derivatives) / sqrt(n_samples)
     end
@@ -223,14 +221,14 @@ begin
     fd_voltage_mean, fd_voltage_err = finite_difference_scan(
         x -> voltage_sensitivity(x; n_particles=nparts, n_turns=nturn), 1.0; h=h,  n_samples = n_samples
     )
-    println("   Final result (h=$(h), $(n_samples) samples): $(round(fd_voltage_mean, digits=4)) ± $(round(fd_voltage_err, digits=4))")
+    println("   Final result (h=$(h), $(n_samples) samples): $(round(fd_voltage_mean, digits=4)) ± $(round(fd_voltage_err, digits=6))")
 
     # Energy derivative  
     println("\n2. Energy sensitivity:")
     fd_energy_mean, fd_energy_err = finite_difference_scan(
         x -> energy_sensitivity(x; n_particles=nparts, n_turns=nturn), 1.0; h=h,  n_samples = n_samples
     )
-    println("   Final result (h=$(h), $(n_samples) samples): $(round(fd_energy_mean, digits=4)) ± $(round(fd_energy_err, digits=4))")
+    println("   Final result (h=$(h), $(n_samples) samples): $(round(fd_energy_mean, digits=4)) ± $(round(fd_energy_err, digits=6))")
 end
 
 # StochasticAD implementation
@@ -409,16 +407,16 @@ begin
     # voltage_scales = range(0.99, 1.01, length=11)
     σ_E_voltage_values = Float64[]
     σ_E_voltage_std = Float64[]
-
+    n_samples = 100
     println("\nScanning voltage parameter...")
     # for scale in voltage_scales
     for scale in scales
-        σ_E_runs = [voltage_sensitivity(scale; n_particles=nparts, n_turns=nturn) for _ in 1:100]
+        σ_E_runs = [voltage_sensitivity(scale; n_particles=nparts, n_turns=nturn) for _ in 1:n_samples]
         σ_E = mean(σ_E_runs)
-        std_σ_E = std(σ_E_runs)
+        std_σ_E = std(σ_E_runs) / sqrt(n_samples)
         push!(σ_E_voltage_values, σ_E)
         push!(σ_E_voltage_std, std_σ_E)
-        println("  Scale: $scale, σ_E: $(round(σ_E, digits=4)) ± $(round(std_σ_E/ length(σ_E_runs), digits=4)) MeV")
+        println("  Scale: $scale, σ_E: $(round(σ_E, digits=4)) ± $(round(std_σ_E, digits=4)) MeV")
     end
 
     # Energy parameter scan
@@ -432,10 +430,10 @@ begin
     for scale in scales
         σ_E_runs = [energy_sensitivity(scale; n_particles=nparts, n_turns=nturn) for _ in 1:100]
         σ_E = mean(σ_E_runs)
-        std_σ_E = std(σ_E_runs)
+        std_σ_E = std(σ_E_runs) / sqrt(n_samples)
         push!(σ_E_energy_values, σ_E)
-        push!(σ_E_energy_std, std_σ_E)
-        println("  Scale: $scale, σ_E: $(round(σ_E, digits=4)) ± $(round(std_σ_E/ length(σ_E_runs), digits=4)) MeV")
+        push!(σ_E_energy_std , std_σ_E)
+        println("  Scale: $scale, σ_E: $(round(σ_E, digits=4)) ± $(round(std_σ_E, digits=4)) MeV")
     end
 
     # Create figure with both plots
@@ -467,7 +465,7 @@ begin
     lines!(ax1, x_range_v, ad_tangent_v, linestyle = :dash, color = :green, linewidth = 3,
         label = "AD ($(round(ad_voltage_mean, digits=3)) ± $(round(ad_voltage_err, digits=3)))")
 
-    axislegend(ax1, position = :lt)
+    # axislegend(ax1, position = :lt)
 
     # Energy sensitivity plot
     ax2 = Axis(fig[1, 2], 
@@ -496,8 +494,8 @@ begin
     lines!(ax2, x_range_e, ad_tangent_e, linestyle = :dash, color = :green, linewidth = 3,
         label = "AD ($(round(ad_energy_mean, digits=3)) ± $(round(ad_energy_err, digits=3)))")
 
-    axislegend(ax2, position = :lt)
-    axislegend(merge=true)
+    axislegend(ax1, merge=true, position = :lt)
+    axislegend(ax2, merge=true, position = :lt)
     display(fig)
     
     # Compute prediction accuracy for both
