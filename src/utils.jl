@@ -128,7 +128,7 @@ Create pre-allocated buffers for efficient simulation calculations.
 #     )
 # end
 
-function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Float64)
+function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=StochasticTriple)
     # Create power-of-two sized buffers for FFT
     power_2_length = next_power_of_two(nbins * 2)
     
@@ -161,17 +161,17 @@ function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Flo
     
     # Create thread-local storage for parallel operations
     n_threads = Threads.nthreads()
-    thread_local_buffers = Vector{Dict{Symbol, Any}}(undef, n_threads)
+    # thread_local_buffers = Vector{Dict{Symbol, Any}}(undef, n_threads)
     
     # Initialize thread-local buffers
-    for i in 1:n_threads
-        thread_local_buffers[i] = Dict{Symbol, Any}(
-            :sum => zero(T),
-            :count => 0,
-            :bin_counts => zeros(Int, nbins),
-            :temp_array => Vector{T}(undef, n_particles ÷ n_threads + 1)
-        )
-    end
+    # for i in 1:n_threads
+    #     thread_local_buffers[i] = Dict{Symbol, Any}(
+    #         :sum => zero(T),
+    #         :count => 0,
+    #         :bin_counts => zeros(T, nbins),
+    #         :temp_array => Vector{T}(undef, n_particles ÷ n_threads + 1)
+    #     )
+    # end
     
     SimulationBuffers{T}(
         particle_vectors[1],   # WF
@@ -192,7 +192,7 @@ function create_simulation_buffers(n_particles::Int64, nbins::Int64, T::Type=Flo
         complex_vectors[3],    # fft_buffer2
         real_buffer,           # real_buffer
         bin_counts,            # bin_counts
-        thread_local_buffers   # thread_local_buffers
+        # thread_local_buffers   # thread_local_buffers
     )
 end
 
@@ -338,14 +338,6 @@ function copyto_particles!(dst::StructArray{Particle{T}}, src::StructArray{Parti
     return dst
 end
 
-
-@inline function compute_mean(x::AbstractVector{T}) where T<:Float64
-    s = zero(T)
-    @turbo for i in 1:length(x)
-        s += x[i]
-    end
-    return s / length(x)
-end
 
 @inline function compute_std(x::AbstractVector{T}) where T<:Float64
     n = length(x)

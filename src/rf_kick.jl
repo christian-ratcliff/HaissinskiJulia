@@ -13,63 +13,93 @@ using StochasticAD
 Apply RF cavity voltage to all particles.
 Enhanced implementation for proper StochasticTriple propagation.
 """
+# function rf_kick!(
+#     voltage,
+#     sin_ϕs,
+#     rf_factor,
+#     ϕs,
+#     particles::StructArray{Particle{T}}
+#     ) where T<:Float64
+    
+#     # # Check if voltage is a StochasticTriple
+#     # is_stochastic = typeof(voltage) <: StochasticTriple
+    
+#     # # Create a single wrapper function that will properly propagate the StochasticTriple
+#     # if is_stochastic
+#     #     # Define the core kick calculation function
+#     #     function apply_kick(v)
+#     #         for i in 1:length(particles)
+#     #             ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+#     #             sin_term = sin(ϕ_val) - sin_ϕs
+#     #             # Apply kick
+#     #             particles.coordinates.ΔE[i] += v * sin_term
+#     #         end
+#     #         # Return a scalar result to ensure gradient propagation
+#     #         return sum(particles.coordinates.ΔE) / length(particles)
+#     #     end
+        
+#     #     # Use propagate with the entire function to maintain StochasticTriple lineage
+#     #     # This scalar result isn't used, but ensures gradient propagation
+#     #     _ = StochasticAD.propagate(apply_kick, voltage)
+#     # else
+#     #     # Standard implementation for non-StochasticTriple case
+#     #     # for i in 1:length(particles)
+#     #     #     ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
+#     #     #     particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+#     #     # # end
+#     #     # z_vals = copy(particles.coordinates.z)  # Cache the value
+#     #     # ΔE_vals = copy(particles.coordinates.ΔE)  # Cache the value
+#     #     # sinϕ = sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs
+#     #     # particles.coordinates.ΔE .= particles.coordinates.ΔE .+ voltage .* (sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs)
+#     #     # particles.coordinates.ΔE .= ΔE_vals  # Store the updated value
+
+#     #     for i in 1:length(particles)
+#     #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+#     #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+#     #     end
+#     # end
+
+#     # chunk_size = max(1, length(particles) ÷ Threads.nthreads() ÷ 4)
+        
+#     # Threads.@threads for chunk_start in 1:chunk_size:length(particles)
+#     #     chunk_end = min(chunk_start + chunk_size - 1, length(particles))
+        
+#     #     @turbo for i in chunk_start:chunk_end
+#     #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+#     #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+#     #     end
+#     # end
+
+#     for i in 1:length(particles)
+#         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
+#         # particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
+#         particles.coordinates.ΔE[i] += voltage * (ϕ_val - ϕ_val^3/6 + ϕ_val^5/120 - sin_ϕs)
+#     end
+    
+#     return nothing
+# end
+
+
+
 function rf_kick!(
     voltage,
     sin_ϕs,
     rf_factor,
     ϕs,
     particles::StructArray{Particle{T}}
-) where T<:Float64
-    
-    # # Check if voltage is a StochasticTriple
-    # is_stochastic = typeof(voltage) <: StochasticTriple
-    
-    # # Create a single wrapper function that will properly propagate the StochasticTriple
-    # if is_stochastic
-    #     # Define the core kick calculation function
-    #     function apply_kick(v)
-    #         for i in 1:length(particles)
-    #             ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-    #             sin_term = sin(ϕ_val) - sin_ϕs
-    #             # Apply kick
-    #             particles.coordinates.ΔE[i] += v * sin_term
-    #         end
-    #         # Return a scalar result to ensure gradient propagation
-    #         return sum(particles.coordinates.ΔE) / length(particles)
-    #     end
+) where T <: Number
+    for i in 1:length(particles)
+        # Calculate phase value
+        ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
         
-    #     # Use propagate with the entire function to maintain StochasticTriple lineage
-    #     # This scalar result isn't used, but ensures gradient propagation
-    #     _ = StochasticAD.propagate(apply_kick, voltage)
-    # else
-    #     # Standard implementation for non-StochasticTriple case
-    #     # for i in 1:length(particles)
-    #     #     ϕ_val = z_to_ϕ(particles.coordinates.z[i], rf_factor, ϕs)
-    #     #     particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-    #     # # end
-    #     # z_vals = copy(particles.coordinates.z)  # Cache the value
-    #     # ΔE_vals = copy(particles.coordinates.ΔE)  # Cache the value
-    #     # sinϕ = sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs
-    #     # particles.coordinates.ΔE .= particles.coordinates.ΔE .+ voltage .* (sin.(-particles.coordinates.z .* rf_factor .+ ϕs) .- sin_ϕs)
-    #     # particles.coordinates.ΔE .= ΔE_vals  # Store the updated value
-
-    #     for i in 1:length(particles)
-    #         ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
-    #         particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-    #     end
-    # end
-
-    chunk_size = max(1, length(particles) ÷ Threads.nthreads() ÷ 4)
+        # Define the nonlinear function for the voltage kick
+        f = x -> sin(x) - sin_ϕs
         
-    Threads.@threads for chunk_start in 1:chunk_size:length(particles)
-        chunk_end = min(chunk_start + chunk_size - 1, length(particles))
+        # Use propagate if the type is a StochasticTriple to correctly handle AD
+        val = T <: StochasticAD.StochasticTriple ? propagate(f, ϕ_val) : f(ϕ_val)
         
-        @turbo for i in chunk_start:chunk_end
-            ϕ_val = -particles.coordinates.z[i] * rf_factor + ϕs
-            particles.coordinates.ΔE[i] += voltage * (sin(ϕ_val) - sin_ϕs)
-        end
+        # Apply the voltage kick
+        particles.coordinates.ΔE[i] += voltage * val
     end
-
-    
     return nothing
 end

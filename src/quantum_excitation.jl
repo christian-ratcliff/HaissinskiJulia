@@ -59,7 +59,11 @@ function quantum_excitation!(
     excitation = sqrt(1-(1-∂U_∂E)^2) * σ_E0
     
     # Apply kicks with loop
-    @turbo for i in 1:length(particles)
+    # @turbo for i in 1:length(particles)
+    #     particles.coordinates.ΔE[i] += excitation * buffers.random_buffer[i]
+    # end
+
+    for i in 1:length(particles)
         particles.coordinates.ΔE[i] += excitation * buffers.random_buffer[i]
     end
     return nothing

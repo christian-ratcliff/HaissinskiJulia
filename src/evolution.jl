@@ -22,44 +22,99 @@ using LoopVectorization
 
 Generate initial particle distribution.
 """
+# function generate_particles(
+#     μ_z::T, μ_E::T, σ_z::T, σ_E::T, num_particles::Int,
+#     energy::T, mass::T, ϕs::T, freq_rf::T
+#     ) where {T<:Union{Real, StochasticAD.StochasticTriple}}
+
+#     # Initial sampling for covariance estimation
+#     initial_sample_size::Int = min(10_000, num_particles)
+#     z_samples = rand(Normal(μ_z, σ_z), initial_sample_size)
+#     E_samples = rand(Normal(μ_E, σ_E), initial_sample_size)
+
+#     # Compute covariance matrix
+#     Σ = Symmetric([cov(z_samples, z_samples) cov(z_samples, E_samples);
+#                    cov(z_samples, E_samples) cov(E_samples, E_samples)])
+
+#     # Create multivariate normal distribution
+#     μ = SVector{2,T}(μ_z, μ_E)
+#     dist_total = MvNormal(μ, Σ)
+
+#     # Relativistic factors
+#     γ::T = energy / mass
+#     β::T = sqrt(1 - 1/γ^2)
+#     rf_factor::T = freq_rf * 2π / (β * SPEED_LIGHT)
+
+#     # Generate correlated random samples
+#     samples = rand(dist_total, num_particles)  # 2 × num_particles matrix
+#     z_vals = samples[1, :]
+#     ΔE_vals = samples[2, :]
+
+#     # z_vals = stochastic_triple.(z_vals)
+#     # ΔE_vals = stochastic_triple.(ΔE_vals)
+
+
+#     # Create the StructArray of Particles
+
+#     # particles = StructArray{Particle{Float64}}(StructArray(Coordinate.(z_vals, ΔE_vals)))
+
+#     if T <: Real
+#         particles = StructArray{Particle{T}}((
+#             StructArray(Coordinate.(z_vals, ΔE_vals)),  # coordinates
+#             # StructArray(Coordinate.(zeros(num_particles), zeros(num_particles)))  # uncertainty
+#             ))
+#     elseif T <: StochasticTriple
+#         # z_vals = stochastic_triple.(z_vals)
+#         # ΔE_vals = stochastic_triple.(ΔE_vals)
+#         particles = StructArray{Particle{T}}((
+#             StructArray(Coordinate.(z_vals, ΔE_vals)),  # coordinates
+#             # StructArray(Coordinate.(zeros(num_particles), zeros(num_particles)))  # uncertainty
+#             ))
+#     end
+
+
+    
+
+
+#     return particles, σ_E, σ_z, energy
+# end
+
 function generate_particles(
     μ_z::T, μ_E::T, σ_z::T, σ_E::T, num_particles::Int,
-    energy::T, mass::T, ϕs::T, freq_rf::T) where T<:Float64
+    energy::T, mass::T, ϕs::T, freq_rf::T
+    ) where {T<:Union{Real, StochasticAD.StochasticTriple}}
 
-    # Initial sampling for covariance estimation
-    initial_sample_size::Int = min(10_000, num_particles)
+    # Initial sampling
+    initial_sample_size = min(10000, num_particles)
     z_samples = rand(Normal(μ_z, σ_z), initial_sample_size)
     E_samples = rand(Normal(μ_E, σ_E), initial_sample_size)
 
-    # Compute covariance matrix
+    # Covariance matrix
     Σ = Symmetric([cov(z_samples, z_samples) cov(z_samples, E_samples);
                    cov(z_samples, E_samples) cov(E_samples, E_samples)])
 
-    # Create multivariate normal distribution
-    μ = SVector{2,T}(μ_z, μ_E)
-    dist_total = MvNormal(μ, Σ)
+    μ_vec = SVector{2,eltype(μ_z)}(μ_z, μ_E)
+    dist_total = MvNormal(μ_vec, Σ)
 
     # Relativistic factors
-    γ::T = energy / mass
-    β::T = sqrt(1 - 1/γ^2)
-    rf_factor::T = freq_rf * 2π / (β * SPEED_LIGHT)
+    γ = energy / mass
+    β = sqrt(1 - 1/γ^2)
+    rf_factor = freq_rf * 2π / (β * SPEED_LIGHT)
 
-    # Generate correlated random samples
-    samples = rand(dist_total, num_particles)  # 2 × num_particles matrix
+    # Sample
+    samples = rand(dist_total, num_particles)
     z_vals = samples[1, :]
     ΔE_vals = samples[2, :]
 
+    # Promote to StochasticTriple if needed
+    if T <: StochasticAD.StochasticTriple
+        z_vals = StochasticAD.stochastic_triple.(z_vals)
+        ΔE_vals = StochasticAD.stochastic_triple.(ΔE_vals)
+    end
 
-    # Create the StructArray of Particles
-
-    # particles = StructArray{Particle{Float64}}(StructArray(Coordinate.(z_vals, ΔE_vals)))
-
-
-    particles = StructArray{Particle{Float64}}((
-    StructArray(Coordinate.(z_vals, ΔE_vals)),  # coordinates
-    # StructArray(Coordinate.(zeros(num_particles), zeros(num_particles)))  # uncertainty
-    ))
-
+    # Create particles
+    coords = Coordinate.(z_vals, ΔE_vals)
+    particles = StructArray{Particle{typeof(coords[1].z)}}((StructArray(coords),))
 
     return particles, σ_E, σ_z, energy
 end
@@ -274,7 +329,7 @@ function longitudinal_evolve!(
     params::SimulationParameters{TE,TM,TV,TR,TPR,TA,TPS,TF},
     buffers::SimulationBuffers{T};
     show_progress::Bool = true
-    ) where {T<:Float64, TE, TM, TV, TR, TPR, TA, TPS, TF}
+    ) where {T<:StochasticAD.StochasticTriple, TE, TM, TV, TR, TPR, TA, TPS, TF}
     
     # Extract parameters
     E0 = params.E0
