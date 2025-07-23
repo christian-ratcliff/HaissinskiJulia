@@ -21,7 +21,6 @@ using Printf
 using Random
 using StructArrays
 using MPI
-using Profile, ProfileSVG
 using Accessors
 
 function parse_command_args()
@@ -403,6 +402,7 @@ if rank == 0 && @isdefined(log_output)
     log_output("-"^20)
 end
 
+global local_flop_count::Float64 = NaN # Initialize before try/catch
 
 # --- Performance Monitoring Section (LIKWID - Single Run, Output Suppressed), Only Measure if turns = 1e3 for study performance ---
 if n_turns == 1e3
@@ -413,7 +413,7 @@ if n_turns == 1e3
     perf_sim_params = sim_params
 
     # Declare the variable to hold this rank's result *before* the try/catch
-    local local_flop_count::Float64 = NaN # Initialize before try/catch
+    
     original_stdout = stdout   
 
     try

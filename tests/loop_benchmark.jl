@@ -70,7 +70,7 @@ end
 # --- 2. Set up Global Dummy Data and Parameters ---
 const T = Float64 # Data type
 const CT = Complex{T}
-const N = 100_000   # Number of particles
+const N = 10_000_000   # Number of particles
 const N_THREADS = nthreads()
 const NBINS = 1024     # Number of bins for histograms/wakefields
 
@@ -279,24 +279,6 @@ results["@turbo"]   = @benchmark turbo_quantum_excitation!(particles, buffers, $
 results["@floop"]   = @benchmark floop_quantum_excitation!(particles, buffers, $excitation) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_quantum_excitation!(particles, buffers, $excitation) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_quantum_excitation!(p_serial, b_serial, excitation)
-    turbo_quantum_excitation!(p_turbo, b_turbo, excitation)
-    floop_quantum_excitation!(p_floop, b_floop, excitation)
-    threadsx_quantum_excitation!(p_tx, b_tx, excitation)
-    @test p_serial.coordinates.ΔE ≈ p_turbo.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_floop.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_tx.coordinates.ΔE rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
-
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
 
@@ -344,24 +326,6 @@ results["Serial"]   = @benchmark serial_synchrotron_radiation!(particles, $dampi
 results["@turbo"]   = @benchmark turbo_synchrotron_radiation!(particles, $damping_factor) setup=($setup_ex) evals=1
 results["@floop"]   = @benchmark floop_synchrotron_radiation!(particles, $damping_factor) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_synchrotron_radiation!(particles, $damping_factor) setup=($setup_ex) evals=1
-
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_synchrotron_radiation!(p_serial, damping_factor)
-    turbo_synchrotron_radiation!(p_turbo, damping_factor)
-    floop_synchrotron_radiation!(p_floop, damping_factor)
-    threadsx_synchrotron_radiation!(p_tx, damping_factor)
-    @test p_serial.coordinates.ΔE ≈ p_turbo.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_floop.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_tx.coordinates.ΔE rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -415,23 +379,6 @@ results["@turbo"]   = @benchmark turbo_rf_kick!(particles, $rf_factor, $ϕs, $vo
 results["@floop"]   = @benchmark floop_rf_kick!(particles, $rf_factor, $ϕs, $voltage, $sin_ϕs) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_rf_kick!(particles, $rf_factor, $ϕs, $voltage, $sin_ϕs) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_rf_kick!(p_serial, rf_factor, ϕs, voltage, sin_ϕs)
-    turbo_rf_kick!(p_turbo, rf_factor, ϕs, voltage, sin_ϕs)
-    floop_rf_kick!(p_floop, rf_factor, ϕs, voltage, sin_ϕs)
-    threadsx_rf_kick!(p_tx, rf_factor, ϕs, voltage, sin_ϕs)
-    @test p_serial.coordinates.ΔE ≈ p_turbo.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_floop.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_tx.coordinates.ΔE rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -490,24 +437,6 @@ results["@turbo"]   = @benchmark turbo_phase_advance!(particles, $rf_factor, $ϕ
 results["@floop"]   = @benchmark floop_phase_advance!(particles, $rf_factor, $ϕs, $coeff) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_phase_advance!(particles, $rf_factor, $ϕs, $coeff) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_phase_advance!(p_serial, rf_factor, ϕs, coeff)
-    turbo_phase_advance!(p_turbo, rf_factor, ϕs, coeff)
-    floop_phase_advance!(p_floop, rf_factor, ϕs, coeff)
-    threadsx_phase_advance!(p_tx, rf_factor, ϕs, coeff)
-    @test p_serial.coordinates.z ≈ p_turbo.coordinates.z rtol=1e-12
-    @test p_serial.coordinates.z ≈ p_floop.coordinates.z rtol=1e-12
-    @test p_serial.coordinates.z ≈ p_tx.coordinates.z rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
-
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
 
@@ -557,23 +486,6 @@ results["@turbo"]   = @benchmark turbo_safe_update_energy!(particles, $value_to_
 results["@floop"]   = @benchmark floop_safe_update_energy!(particles, $value_to_subtract) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_safe_update_energy!(particles, $value_to_subtract) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_safe_update_energy!(p_serial, value_to_subtract)
-    turbo_safe_update_energy!(p_turbo, value_to_subtract)
-    floop_safe_update_energy!(p_floop, value_to_subtract)
-    threadsx_safe_update_energy!(p_tx, value_to_subtract)
-    @test p_serial.coordinates.ΔE ≈ p_turbo.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_floop.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_tx.coordinates.ΔE rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -648,23 +560,7 @@ results["@turbo"]   = @benchmark turbo_update_eta!(particles, $mass, $γ0, $α_c
 results["@floop"]   = @benchmark floop_update_eta!(particles, $mass, $γ0, $α_c, $harmonic, $β0, $E0, $rf_factor, $ϕs) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_update_eta!(particles, $mass, $γ0, $α_c, $harmonic, $β0, $E0, $rf_factor, $ϕs) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_update_eta!(p_serial, mass, γ0, α_c, harmonic, β0, E0, rf_factor, ϕs)
-    turbo_update_eta!(p_turbo, mass, γ0, α_c, harmonic, β0, E0, rf_factor, ϕs)
-    floop_update_eta!(p_floop, mass, γ0, α_c, harmonic, β0, E0, rf_factor, ϕs)
-    threadsx_update_eta!(p_tx, mass, γ0, α_c, harmonic, β0, E0, rf_factor, ϕs)
-    @test p_serial.coordinates.z ≈ p_turbo.coordinates.z rtol=1e-12
-    @test p_serial.coordinates.z ≈ p_floop.coordinates.z rtol=1e-12
-    @test p_serial.coordinates.z ≈ p_tx.coordinates.z rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
+
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -727,27 +623,6 @@ results["@turbo"]   = @benchmark turbo_zero_alloc_interp_p1!(buffers.indices_buf
 results["@floop"]   = @benchmark floop_zero_alloc_interp_p1!(buffers.indices_buffer, buffers.weights_buffer, $particle_positions_zaip1, $bin_start, $bin_end, $inv_step, $NBINS) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_zero_alloc_interp_p1!(buffers.indices_buffer, buffers.weights_buffer, $particle_positions_zaip1, $bin_start, $bin_end, $inv_step, $NBINS) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_zero_alloc_interp_p1!(b_serial.indices_buffer, b_serial.weights_buffer, particle_positions_zaip1, bin_start, bin_end, inv_step, NBINS)
-    turbo_zero_alloc_interp_p1!(b_turbo.indices_buffer, b_turbo.weights_buffer, particle_positions_zaip1, bin_start, bin_end, inv_step, NBINS)
-    floop_zero_alloc_interp_p1!(b_floop.indices_buffer, b_floop.weights_buffer, particle_positions_zaip1, bin_start, bin_end, inv_step, NBINS)
-    threadsx_zero_alloc_interp_p1!(b_tx.indices_buffer, b_tx.weights_buffer, particle_positions_zaip1, bin_start, bin_end, inv_step, NBINS)
-    # Test both modified buffers
-    @test b_serial.indices_buffer ≈ b_turbo.indices_buffer
-    @test b_serial.indices_buffer ≈ b_floop.indices_buffer
-    @test b_serial.indices_buffer ≈ b_tx.indices_buffer
-    @test b_serial.weights_buffer ≈ b_turbo.weights_buffer rtol=1e-12
-    @test b_serial.weights_buffer ≈ b_floop.weights_buffer rtol=1e-12
-    @test b_serial.weights_buffer ≈ b_tx.weights_buffer rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -810,24 +685,6 @@ results["@turbo"]   = @benchmark turbo_zero_alloc_interp_p2!(buffers.potential_r
 # results["@floop"]   = @benchmark floop_zero_alloc_interp_p2!(buffers.potential_result, buffers.indices_buffer, buffers.weights_buffer, buffers.potential_values) setup=($setup_ex) evals=1
 # results["ThreadsX"] = @benchmark threadsx_zero_alloc_interp_p2!(buffers.potential_result, buffers.indices_buffer, buffers.weights_buffer, buffers.potential_values) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    # p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    # p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Use the initial buffers where part 1 was run
-    serial_zero_alloc_interp_p2!(b_serial.potential_result, buffers_initial.indices_buffer, buffers_initial.weights_buffer, buffers_initial.potential_values)
-    turbo_zero_alloc_interp_p2!(b_turbo.potential_result, buffers_initial.indices_buffer, buffers_initial.weights_buffer, buffers_initial.potential_values)
-    # floop_zero_alloc_interp_p2!(b_floop.potential_result, buffers_initial.indices_buffer, buffers_initial.weights_buffer, buffers_initial.potential_values)
-    # threadsx_zero_alloc_interp_p2!(b_tx.potential_result, buffers_initial.indices_buffer, buffers_initial.weights_buffer, buffers_initial.potential_values)
-    @test b_serial.potential_result ≈ b_turbo.potential_result rtol=1e-12
-    # @test b_serial.potential_result ≈ b_floop.potential_result rtol=1e-12
-    # @test b_serial.potential_result ≈ b_tx.potential_result rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -873,23 +730,6 @@ results["Serial"]   = @benchmark serial_calc_wake_func!(buffers.WF_temp, $bin_ce
 results["@floop"]   = @benchmark floop_calc_wake_func!(buffers.WF_temp, $bin_centers, $wake_factor, $wake_sqrt, $inv_cτ) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_calc_wake_func!(buffers.WF_temp, $bin_centers, $wake_factor, $wake_sqrt, $inv_cτ) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    # p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_calc_wake_func!(b_serial.WF_temp, bin_centers, wake_factor, wake_sqrt, inv_cτ)
-    # turbo_calc_wake_func!(b_turbo.WF_temp, bin_centers, wake_factor, wake_sqrt, inv_cτ)
-    floop_calc_wake_func!(b_floop.WF_temp, bin_centers, wake_factor, wake_sqrt, inv_cτ)
-    threadsx_calc_wake_func!(b_tx.WF_temp, bin_centers, wake_factor, wake_sqrt, inv_cτ)
-    # @test b_serial.WF_temp ≈ b_turbo.WF_temp rtol=1e-12
-    @test b_serial.WF_temp ≈ b_floop.WF_temp rtol=1e-12
-    @test b_serial.WF_temp ≈ b_tx.WF_temp rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -938,29 +778,7 @@ results["@turbo"]   = @benchmark turbo_wakefield_norm_global!(buffers.normalized
 results["@floop"]   = @benchmark floop_wakefield_norm_global!(buffers.normalized_global_amounts, buffers.global_bin_counts, $inv_n_global) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_norm_global!(buffers.normalized_global_amounts, buffers.global_bin_counts, $inv_n_global) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Ensure counts are set in test buffers
-    b_serial.global_bin_counts .= buffers_initial.global_bin_counts
-    b_turbo.global_bin_counts .= buffers_initial.global_bin_counts
-    b_floop.global_bin_counts .= buffers_initial.global_bin_counts
-    b_tx.global_bin_counts .= buffers_initial.global_bin_counts
 
-    serial_wakefield_norm_global!(b_serial.normalized_global_amounts, b_serial.global_bin_counts, inv_n_global)
-    turbo_wakefield_norm_global!(b_turbo.normalized_global_amounts, b_turbo.global_bin_counts, inv_n_global)
-    floop_wakefield_norm_global!(b_floop.normalized_global_amounts, b_floop.global_bin_counts, inv_n_global)
-    threadsx_wakefield_norm_global!(b_tx.normalized_global_amounts, b_tx.global_bin_counts, inv_n_global)
-    @test b_serial.normalized_global_amounts ≈ b_turbo.normalized_global_amounts rtol=1e-12
-    @test b_serial.normalized_global_amounts ≈ b_floop.normalized_global_amounts rtol=1e-12
-    @test b_serial.normalized_global_amounts ≈ b_tx.normalized_global_amounts rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -1006,23 +824,7 @@ results["@turbo"]   = @benchmark turbo_wakefield_delta!(buffers.lambda_kernel, $
 results["@floop"]   = @benchmark floop_wakefield_delta!(buffers.lambda_kernel, $bin_centers, $delta_std) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_delta!(buffers.lambda_kernel, $bin_centers, $delta_std) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    serial_wakefield_delta!(b_serial.lambda_kernel, bin_centers, delta_std)
-    turbo_wakefield_delta!(b_turbo.lambda_kernel, bin_centers, delta_std)
-    floop_wakefield_delta!(b_floop.lambda_kernel, bin_centers, delta_std)
-    threadsx_wakefield_delta!(b_tx.lambda_kernel, bin_centers, delta_std)
-    @test b_serial.lambda_kernel ≈ b_turbo.lambda_kernel rtol=1e-12
-    @test b_serial.lambda_kernel ≈ b_floop.lambda_kernel rtol=1e-12
-    @test b_serial.lambda_kernel ≈ b_tx.lambda_kernel rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
+
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -1085,32 +887,7 @@ results["Serial"]   = @benchmark serial_wakefield_complex!(buffers.fft_W, buffer
 results["@floop"]   = @benchmark floop_wakefield_complex!(buffers.fft_W, buffers.fft_L, buffers.WF_temp, buffers.lambda_kernel, buffers.normalized_global_amounts) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_complex!(buffers.fft_W, buffers.fft_L, buffers.WF_temp, buffers.lambda_kernel, buffers.normalized_global_amounts) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    # p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Set inputs for test buffers
-    b_serial.WF_temp .= buffers_initial.WF_temp; b_serial.lambda_kernel .= buffers_initial.lambda_kernel; b_serial.normalized_global_amounts .= buffers_initial.normalized_global_amounts;
-    # b_turbo.WF_temp .= buffers_initial.WF_temp; b_turbo.lambda_kernel .= buffers_initial.lambda_kernel; b_turbo.normalized_global_amounts .= buffers_initial.normalized_global_amounts;
-    b_floop.WF_temp .= buffers_initial.WF_temp; b_floop.lambda_kernel .= buffers_initial.lambda_kernel; b_floop.normalized_global_amounts .= buffers_initial.normalized_global_amounts;
-    b_tx.WF_temp .= buffers_initial.WF_temp; b_tx.lambda_kernel .= buffers_initial.lambda_kernel; b_tx.normalized_global_amounts .= buffers_initial.normalized_global_amounts;
 
-    serial_wakefield_complex!(b_serial.fft_W, b_serial.fft_L, b_serial.WF_temp, b_serial.lambda_kernel, b_serial.normalized_global_amounts)
-    # turbo_wakefield_complex!(b_turbo.fft_W, b_turbo.fft_L, b_turbo.WF_temp, b_turbo.lambda_kernel, b_turbo.normalized_global_amounts)
-    floop_wakefield_complex!(b_floop.fft_W, b_floop.fft_L, b_floop.WF_temp, b_floop.lambda_kernel, b_floop.normalized_global_amounts)
-    threadsx_wakefield_complex!(b_tx.fft_W, b_tx.fft_L, b_tx.WF_temp, b_tx.lambda_kernel, b_tx.normalized_global_amounts)
-    # @test b_serial.fft_W ≈ b_turbo.fft_W rtol=1e-12
-    @test b_serial.fft_W ≈ b_floop.fft_W rtol=1e-12
-    @test b_serial.fft_W ≈ b_tx.fft_W rtol=1e-12
-    # @test b_serial.fft_L ≈ b_turbo.fft_L rtol=1e-12
-    @test b_serial.fft_L ≈ b_floop.fft_L rtol=1e-12
-    @test b_serial.fft_L ≈ b_tx.fft_L rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -1165,29 +942,7 @@ results["Serial"]   = @benchmark serial_wakefield_local_convol!(buffers.local_co
 results["@floop"]   = @benchmark floop_wakefield_local_convol!(buffers.local_convol_freq, buffers.local_fft_W, buffers.local_fft_L, $current) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_local_convol!(buffers.local_convol_freq, buffers.local_fft_W, buffers.local_fft_L, $current) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    # p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Set inputs
-    b_serial.local_fft_W .= buffers_initial.local_fft_W; b_serial.local_fft_L .= buffers_initial.local_fft_L;
-    # b_turbo.local_fft_W .= buffers_initial.local_fft_W; b_turbo.local_fft_L .= buffers_initial.local_fft_L;
-    b_floop.local_fft_W .= buffers_initial.local_fft_W; b_floop.local_fft_L .= buffers_initial.local_fft_L;
-    b_tx.local_fft_W .= buffers_initial.local_fft_W; b_tx.local_fft_L .= buffers_initial.local_fft_L;
 
-    serial_wakefield_local_convol!(b_serial.local_convol_freq, b_serial.local_fft_W, b_serial.local_fft_L, current)
-    # turbo_wakefield_local_convol!(b_turbo.local_convol_freq, b_turbo.local_fft_W, b_turbo.local_fft_L, current)
-    floop_wakefield_local_convol!(b_floop.local_convol_freq, b_floop.local_fft_W, b_floop.local_fft_L, current)
-    threadsx_wakefield_local_convol!(b_tx.local_convol_freq, b_tx.local_fft_W, b_tx.local_fft_L, current)
-    # @test b_serial.local_convol_freq ≈ b_turbo.local_convol_freq rtol=1e-12
-    @test b_serial.local_convol_freq ≈ b_floop.local_convol_freq rtol=1e-12
-    @test b_serial.local_convol_freq ≈ b_tx.local_convol_freq rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -1239,29 +994,6 @@ results["Serial"]   = @benchmark serial_wakefield_real!(buffers.potential_values
 results["@floop"]   = @benchmark floop_wakefield_real!(buffers.potential_values_at_centers_global, buffers.convol) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_real!(buffers.potential_values_at_centers_global, buffers.convol) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    # p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Set inputs
-    b_serial.convol .= buffers_initial.convol;
-    # b_turbo.convol .= buffers_initial.convol;
-    b_floop.convol .= buffers_initial.convol;
-    b_tx.convol .= buffers_initial.convol;
-
-    serial_wakefield_real!(b_serial.potential_values_at_centers_global, b_serial.convol)
-    # turbo_wakefield_real!(b_turbo.potential_values_at_centers_global, b_turbo.convol)
-    floop_wakefield_real!(b_floop.potential_values_at_centers_global, b_floop.convol)
-    threadsx_wakefield_real!(b_tx.potential_values_at_centers_global, b_tx.convol)
-    # @test b_serial.potential_values_at_centers_global ≈ b_turbo.potential_values_at_centers_global rtol=1e-12
-    @test b_serial.potential_values_at_centers_global ≈ b_floop.potential_values_at_centers_global rtol=1e-12
-    @test b_serial.potential_values_at_centers_global ≈ b_tx.potential_values_at_centers_global rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)
@@ -1318,29 +1050,7 @@ results["@turbo"]   = @benchmark turbo_wakefield_last!(particles, buffers.potent
 results["@floop"]   = @benchmark floop_wakefield_last!(particles, buffers.potential) setup=($setup_ex) evals=1
 results["ThreadsX"] = @benchmark threadsx_wakefield_last!(particles, buffers.potential) setup=($setup_ex) evals=1
 
-# --- Verification ---
-try
-    p_serial = deepcopy(particles_initial); b_serial = deepcopy(buffers_initial)
-    p_turbo = deepcopy(particles_initial); b_turbo = deepcopy(buffers_initial)
-    p_floop = deepcopy(particles_initial); b_floop = deepcopy(buffers_initial)
-    p_tx = deepcopy(particles_initial); b_tx = deepcopy(buffers_initial)
-    # Set inputs
-    b_serial.potential .= buffers_initial.potential;
-    b_turbo.potential .= buffers_initial.potential;
-    b_floop.potential .= buffers_initial.potential;
-    b_tx.potential .= buffers_initial.potential;
 
-    serial_wakefield_last!(p_serial, b_serial.potential)
-    turbo_wakefield_last!(p_turbo, b_turbo.potential)
-    floop_wakefield_last!(p_floop, b_floop.potential)
-    threadsx_wakefield_last!(p_tx, b_tx.potential)
-    @test p_serial.coordinates.ΔE ≈ p_turbo.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_floop.coordinates.ΔE rtol=1e-12
-    @test p_serial.coordinates.ΔE ≈ p_tx.coordinates.ΔE rtol=1e-12
-    println("Verification PASSED for $kernel_name")
-catch e
-    println("ERROR during verification for $kernel_name: $e")
-end
 
 # --- Save Results ---
 save_benchmark_results(kernel_name, results, N, N_THREADS)

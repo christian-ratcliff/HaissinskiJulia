@@ -9,9 +9,9 @@ THREADS=(1 2 4 8 16 32 64 128 256 512)    # Number of threads per process
 TURNS=(1e2 1e3 1e4)
 PARTICLES=(1e5 1e6 1e7)
 
-# PROCESSES=(1)  # Number of MPI processes
+# PROCESSES=(1 2 4 8 16 32 64)  # Number of MPI processes
 # THREADS=(1)    # Number of threads per process
-# TURNS=(1e1)
+# TURNS=(1e3)
 # PARTICLES=(1e5)
 
 
@@ -30,7 +30,7 @@ for proc in "${PROCESSES[@]}"; do
     for turn in "${TURNS[@]}"; do
       for particle in "${PARTICLES[@]}"; do
         # Create unique job name
-        job_name="p${proc}_t${thread}_n${turn}_p${particle}"
+        job_name="pr${proc}_t${thread}_n${turn}_pa${particle}"
         script_file="slurm/scripts/${job_name}.sh"
         
         # Create SLURM script
@@ -41,13 +41,14 @@ for proc in "${PROCESSES[@]}"; do
 #SBATCH --error=slurm/err/${job_name}.err
 #SBATCH --ntasks=${proc}
 #SBATCH --cpus-per-task=${thread}
-#SBATCH --time=03:59:59
+#SBATCH --time=03:50:00
 #SBATCH --mem=493G
 #SBATCH --constraint=amd20
 
 module purge
 # Load any necessary modules here
-module load Julia/1.9.3-linux-x86_64
+# module load Julia
+module load Julia
 module load likwid
 module load OpenMPI
 

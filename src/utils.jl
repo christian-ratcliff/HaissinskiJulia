@@ -652,7 +652,6 @@ function initialize_mpi_buffers!(
     rank = MPI.Comm_rank(comm)
     
     # Setup counts and displacements - these are already in buffers
-    # but we need to populate them
     counts = buffers.scatterv_counts
     displs = buffers.scatterv_displs
     

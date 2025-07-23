@@ -20,7 +20,7 @@ using LinearAlgebra
 
 
 
-# --- Particle Generation (Common function, used differently in serial/MPI) ---
+# --- Particle Generation  ---
 """
     generate_particles(...)
 
@@ -43,9 +43,7 @@ function generate_particles(
     μ_z::T, μ_E::T, σ_z::T, σ_E::T, num_particles::Int,
     energy::T, mass::T, ϕs::T, freq_rf::T) where T<:Float64
 
-    # Ensure num_particles is non-negative
     if num_particles <= 0
-         # Return an empty StructArray of the correct type and zero spreads
          empty_coords = StructArray(Coordinate.(Vector{T}(), Vector{T}()))
          empty_particles = StructArray{Particle{T}}((coordinates=empty_coords,))
          return empty_particles, T(0), T(0), energy

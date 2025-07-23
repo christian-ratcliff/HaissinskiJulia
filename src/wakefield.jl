@@ -17,17 +17,16 @@ using FHist
 using MPI # Needed for MPI operations
 using FLoops
 
-# Local helper functions (used by both modes potentially)
 
 function zero_alloc_interpolation!(
     result::Vector{T},                # Output buffer (reuse buffers.potential)  
     particle_positions::Vector{T},    # Current particle positions
-    bin_centers::AbstractRange{T},           # X-grid
+    bin_centers::AbstractRange{T},    # X-grid
     potential_values::Vector{T},      # Y-values (current potential)
     indices_buffer::Vector{Int},      # Reuse buffers.interp_indices
     weights_buffer::Vector{T},         # Reuse buffers.interp_weights
     buffers::SimulationBuffers{T}
-) where T<:Float64
+    ) where T<:Float64
     
     nbins = length(bin_centers)
     if nbins <= 1
@@ -154,7 +153,6 @@ function apply_wakefield_inplace!(
          return nothing # No particles to apply wakefield to in serial mode
     end
 
-    # Common parameters
     inv_cτ = (cτ == 0) ? T(Inf) : 1 / cτ # Avoid division by zero
     nbins = length(buffers.λ) # Number of bins from buffer size
     if nbins <= 0; error("apply_wakefield_inplace: nbins is zero or negative."); end
@@ -350,7 +348,6 @@ function apply_wakefield_inplace!(
         fill!(buffers.potential_values_at_centers_global, 0.0)
 
         # Step 1: Calculate Histogram (using global particle data)
-        # Uses calculate_histogram helper which calls FHist internally
         # Store results directly in buffers.λ (centers) and buffers.bin_counts
         # Need centers calculation separate from histogram counts storage
         _centers, _counts = calculate_histogram(particles.coordinates.z, bin_edges)
